@@ -1,0 +1,7 @@
+# Send only what the service needs to Docker; everything else (data, notebooks, .env) stays out
+*
+!pyproject.toml
+!uv.lock
+!scripts/predict.py
+!scripts/utility.py
+!models/xgb_final.bin

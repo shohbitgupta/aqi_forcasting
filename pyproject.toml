@@ -1,0 +1,30 @@
+[project]
+name = "aqi-forecasting"
+version = "0.1.0"
+description = "Next-day AQI category forecast for 14 Indian cities: the prediction service"
+requires-python = ">=3.13,<3.14"
+
+# What the prediction service needs. The model file is a pickle, so the libraries it was
+# trained with are pinned exactly: other versions may fail to load it or predict differently.
+dependencies = [
+    "numpy==2.5.4",
+    "pandas==3.0.6",
+    "scipy==1.18.1",
+    "scikit-learn==1.9.1",
+    "xgboost==3.4.1; sys_platform != 'linux'",
+    "xgboost-cpu==3.4.1; sys_platform == 'linux'",   # same library without the GPU parts: a smaller image
+    "fastapi",
+    "uvicorn",
+]
+
+[dependency-groups]
+# Notebooks, training and the data pipeline (not installed in the Docker image)
+dev = [
+    "ipykernel",
+    "matplotlib>=3.7",
+    "requests>=2.31",
+    "statsmodels>=0.14",
+]
+
+[tool.uv]
+package = false          # an application, not a library: nothing to build or install

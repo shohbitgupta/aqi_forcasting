@@ -1,7 +1,10 @@
 """Helper functions shared by the notebooks."""
 import numpy as np
 import pandas as pd
-from statsmodels.stats.stattools import medcouple
+from sklearn.metrics import (accuracy_score, f1_score, precision_score,
+                             recall_score, confusion_matrix, roc_auc_score)
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.utils.class_weight import compute_sample_weight
 
 AQI_CATEGORIES = ["Good", "Satisfactory", "Moderate", "Poor", "Very Poor", "Severe"]
 AQI_BINS = [0, 50, 100, 200, 300, 400, float("inf")]
@@ -195,6 +198,7 @@ def outlier_fences(s, k=1.5, skew_threshold=1.0, spike_share=0.5):
     if abs(skew) <= skew_threshold:
         method, mc, lo_mult, hi_mult = "tukey", np.nan, 1.0, 1.0
     else:
+        from statsmodels.stats.stattools import medcouple            # imported here so the service works without statsmodels
         method = "adjusted boxplot"
         mc = float(np.clip(medcouple(x.to_numpy(dtype=float)), -0.6, 0.6))
         a, b = (-4, 3) if mc >= 0 else (-3, 4)
@@ -354,3 +358,233 @@ def vif_table(X):
         warnings.simplefilter("ignore")        # perfectly collinear sets warn about a singular matrix
         vif = [variance_inflation_factor(Xc.values, i) for i in range(1, Xc.shape[1])]
     return pd.Series(vif, index=X.columns, name="VIF").sort_values(ascending=False).round(2)
+
+
+
+VP, SEV = AQI_CATEGORIES.index('Very Poor'), AQI_CATEGORIES.index('Severe')
+
+def evaluate(name, y_true, y_pred):
+    """Score one model's predictions. Returns one row for the results table."""
+    y_true = pd.Series(y_true).astype(str).to_numpy()
+    y_pred = pd.Series(y_pred).astype(str).to_numpy()
+
+    kw = dict(labels=AQI_CATEGORIES, zero_division=0)
+    recall = recall_score(y_true, y_pred, average=None, **kw)
+    precision = precision_score(y_true, y_pred, average=None, **kw)
+    return {
+        'model': name,
+        'accuracy': accuracy_score(y_true, y_pred),
+        'macro_f1': f1_score(y_true, y_pred, average='macro', **kw),
+        'recall_very_poor': recall[VP],
+        'recall_severe': recall[SEV],
+        'precision_very_poor': precision[VP],
+        'precision_severe': precision[SEV],
+    }
+
+
+DANGEROUS = ["Very Poor", "Severe"]     # the health alert: Very Poor or worse
+
+
+def forecast_scorecard(y_true, predictions, y_today, decimals=3):
+    """Compare several forecasts on the same days. One column per forecast.
+
+    y_true      : what really happened tomorrow
+    predictions : {name: predicted categories}
+    y_today     : today's category, to split days into "changed" and "unchanged"
+
+    Rows: macro F1, accuracy, Severe caught / missed / false alarms,
+    "Dangerous" alert recall and precision, and change / unchanged days right.
+    Counts stay whole numbers; scores are rounded to `decimals`.
+    """
+    y_true = pd.Series(y_true).astype(str).to_numpy()
+    changed = pd.Series(y_today).astype(str).to_numpy() != y_true
+    real_dangerous = np.isin(y_true, DANGEROUS)
+
+    table = {}
+    for name, pred in predictions.items():
+        pred = pd.Series(pred).astype(str).to_numpy()
+        severe_hit = ((pred == "Severe") & (y_true == "Severe")).sum()
+        alert = np.isin(pred, DANGEROUS)
+        score = lambda x: round(float(x), decimals)
+        table[name] = {
+            "macro F1": score(f1_score(y_true, pred, labels=AQI_CATEGORIES, average="macro", zero_division=0)),
+            "accuracy": score((pred == y_true).mean()),
+            "Severe caught": int(severe_hit),
+            "Severe missed": int((y_true == "Severe").sum() - severe_hit),
+            "Severe false alarms": int((pred == "Severe").sum() - severe_hit),
+            "Dangerous recall": score((alert & real_dangerous).sum() / real_dangerous.sum()),
+            "Dangerous precision": score((alert & real_dangerous).sum() / alert.sum() if alert.any() else 0.0),
+            "change days right": score((pred[changed] == y_true[changed]).mean()),
+            "unchanged days right": score((pred[~changed] == y_true[~changed]).mean()),
+        }
+    # object columns, built per forecast, so counts stay whole numbers next to the scores
+    return pd.DataFrame({name: pd.Series(rows, dtype=object) for name, rows in table.items()})
+
+
+def class_scores_table(y_true, predictions):
+    """Precision, recall and F1 for every category, side by side for several forecasts."""
+    y_true = pd.Series(y_true).astype(str).to_numpy()
+    parts = {}
+    for name, pred in predictions.items():
+        pred = pd.Series(pred).astype(str).to_numpy()
+        kw = dict(labels=AQI_CATEGORIES, average=None, zero_division=0)
+        parts[name] = pd.DataFrame({
+            "precision": precision_score(y_true, pred, **kw),
+            "recall": recall_score(y_true, pred, **kw),
+            "F1": f1_score(y_true, pred, **kw),
+        }, index=AQI_CATEGORIES)
+    return pd.concat(parts, axis=1)
+
+
+def proba_table(model, X):
+    """The model's probability for every category, as a table with columns in AQI_CATEGORIES order.
+
+    scikit-learn orders predict_proba columns by model.classes_ (alphabetical for text
+    labels), so the columns are named and reordered here to avoid mixing them up.
+    """
+    return pd.DataFrame(model.predict_proba(X), columns=list(model.classes_))[AQI_CATEGORIES]
+
+
+def persistence_proba(status_today):
+    """Persistence as 'probabilities': 1 for today's category, 0 for every other one.
+
+    Persistence only says yes or no, so it gets a single point on the ROC curve; its AUC
+    is (recall + share of other days correctly left out) / 2, not a full ranking score.
+    """
+    status = pd.Series(np.asarray(status_today, dtype=str))
+    return pd.DataFrame({c: (status == c).astype(float).to_numpy() for c in AQI_CATEGORIES})
+
+
+def auc_scores(y_true, proba):
+    """ROC AUC for every category (one against the rest), their average, and the Dangerous alert.
+
+    AUC: take one day that really was Severe and one that was not; AUC is the chance the
+    model gave the Severe day the higher Severe probability. 0.5 = coin toss, 1.0 = perfect.
+    It judges the ranking of the probabilities, before any threshold is chosen.
+    """
+    y_true = np.asarray(y_true, dtype=str)
+    scores = {c: roc_auc_score(y_true == c, proba[c]) for c in AQI_CATEGORIES}
+    scores["macro"] = float(np.mean([scores[c] for c in AQI_CATEGORIES]))
+    scores["Dangerous"] = roc_auc_score(np.isin(y_true, DANGEROUS), proba[DANGEROUS].sum(axis=1))
+    return pd.Series(scores)
+
+
+def rolling_validation(df, make_model, to_xy, val_years=range(2019, 2024), test_from=2024,
+                       target="tomorrow_status", date_col="date"):
+    """Score a model on several years, each time learning only from the years before it.
+
+    Round for val_year 2021: learn from every year < 2021, score on 2021 alone. So every
+    round imitates real use (the model always predicts days after the ones it learned
+    from), and together the rounds show whether a result is stable or luck.
+
+    make_model : function returning a fresh, unfitted model
+    to_xy      : function (train_part, val_part) -> (X_train, X_val). Anything learned from
+                 data (e.g. city pressure normals) must come from train_part only.
+    test_from  : the first test year; scoring it (or later) is refused, so the test set stays locked.
+
+    Returns one row per year: the model's and persistence's macro F1 on that year, and
+    the training-years macro F1 (a large gap means overfitting).
+    """
+    if any(year >= test_from for year in val_years):
+        raise ValueError(f"val_years must be before {test_from}: the test years stay locked")
+
+    year = pd.to_datetime(df[date_col]).dt.year
+    rows = []
+    for val_year in val_years:
+        train, val = df[year < val_year], df[year == val_year]
+        X_train, X_val = to_xy(train, val)
+        y_train = train[target].astype(str).to_numpy()
+        y_val = val[target].astype(str).to_numpy()
+
+        model = make_model().fit(X_train, y_train)
+        f1 = lambda y, p: f1_score(y, p, labels=AQI_CATEGORIES, average="macro", zero_division=0)
+        rows.append({
+            "val_year": val_year,
+            "train_rows": len(train),
+            "val_rows": len(val),
+            "severe_days": int((y_val == "Severe").sum()),
+            "train_macro_f1": f1(y_train, model.predict(X_train)),
+            "macro_f1": f1(y_val, model.predict(X_val)),
+            "persistence_macro_f1": f1(y_val, val["status_today"].astype(str).to_numpy()),
+        })
+        if hasattr(model, "predict_proba"):              # AUC needs probabilities, not just a category
+            rows[-1]["macro_auc"] = auc_scores(y_val, proba_table(model, X_val))["macro"]
+            rows[-1]["persistence_macro_auc"] = auc_scores(y_val, persistence_proba(val["status_today"]))["macro"]
+    out = pd.DataFrame(rows)
+    out["vs_persistence"] = out["macro_f1"] - out["persistence_macro_f1"]
+    return out
+
+
+def rolling_summary(rolling):
+    """One row per model from stacked rolling_validation results (needs a 'model' column).
+
+    passes_bar is the rule every new model must meet: beat persistence on the
+    five-year average AND in most of the years, not just in one lucky year.
+    """
+    summary = rolling.groupby("model", sort=False).agg(
+        mean_macro_f1=("macro_f1", "mean"),
+        spread=("macro_f1", "std"),                     # how much the score moves from year to year
+        mean_vs_persistence=("vs_persistence", "mean"),
+        years_won=("vs_persistence", lambda d: int((d > 0).sum())),
+        years=("vs_persistence", "size"),
+        mean_train_macro_f1=("train_macro_f1", "mean"),
+    )
+    if "macro_auc" in rolling:                           # only when the models gave probabilities
+        summary["mean_macro_auc"] = rolling.groupby("model", sort=False)["macro_auc"].mean()
+    summary["mean_train_gap"] = summary.pop("mean_train_macro_f1") - summary["mean_macro_f1"]
+    summary["passes_bar"] = (summary["mean_vs_persistence"] > 0) & (summary["years_won"] > summary["years"] / 2)
+    return summary
+
+
+class CategoryXGB(BaseEstimator, ClassifierMixin):
+    """XGBoost that takes and returns the AQI category names.
+
+    XGBoost only accepts the classes as numbers 0-5. This wrapper turns the names
+    into numbers in AQI_CATEGORIES order before training, and back into names when
+    predicting, so it fits in a Pipeline and in rolling_validation like any other model.
+
+    balanced=True weights every training day by its class (like class_weight='balanced').
+    fit(..., eval_set=[(X_val, y_val)], early_stopping_rounds=50) stops adding trees
+    once the validation loss stops improving; best_n_trees_ then holds the number used.
+    """
+
+    def __init__(self, n_estimators=300, learning_rate=0.1, max_depth=6, min_child_weight=1,
+                 subsample=1.0, colsample_bytree=1.0, reg_lambda=1.0, balanced=False, random_state=1):
+        self.n_estimators = n_estimators
+        self.learning_rate = learning_rate
+        self.max_depth = max_depth
+        self.min_child_weight = min_child_weight
+        self.subsample = subsample
+        self.colsample_bytree = colsample_bytree
+        self.reg_lambda = reg_lambda
+        self.balanced = balanced
+        self.random_state = random_state
+
+    @staticmethod
+    def _codes(y):
+        return pd.Categorical(y, categories=AQI_CATEGORIES).codes      # name -> 0..5, unknown -> -1
+
+    def fit(self, X, y, eval_set=None, early_stopping_rounds=None):
+        from xgboost import XGBClassifier                               # imported here so utility works without xgboost
+
+        codes = self._codes(y)
+        if (codes < 0).any():
+            raise ValueError(f"unknown categories in y: {sorted(set(np.asarray(y)[codes < 0]))}")
+        self.classes_ = np.array(AQI_CATEGORIES)
+        self.booster_ = XGBClassifier(
+            n_estimators=self.n_estimators, learning_rate=self.learning_rate, max_depth=self.max_depth,
+            min_child_weight=self.min_child_weight, subsample=self.subsample,
+            colsample_bytree=self.colsample_bytree, reg_lambda=self.reg_lambda,
+            objective="multi:softprob", eval_metric="mlogloss", tree_method="hist",
+            early_stopping_rounds=early_stopping_rounds, random_state=self.random_state, n_jobs=-1)
+        weights = compute_sample_weight("balanced", codes) if self.balanced else None
+        evals = None if eval_set is None else [(X_e, self._codes(y_e)) for X_e, y_e in eval_set]
+        self.booster_.fit(X, codes, sample_weight=weights, eval_set=evals, verbose=False)
+        self.best_n_trees_ = (self.booster_.best_iteration + 1) if early_stopping_rounds else self.n_estimators
+        return self
+
+    def predict_proba(self, X):
+        return self.booster_.predict_proba(X)                           # columns in AQI_CATEGORIES order
+
+    def predict(self, X):
+        return self.classes_[self.predict_proba(X).argmax(axis=1)]

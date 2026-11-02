@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -39,6 +40,11 @@ BULLETIN_ROW = re.compile(r'\d+ (.+?) (?:Good|Satisfactory|Moderate|Poor|Very Po
                           r'(\d+(?:\.\d+)?) (.*?) ?\d+/\d+')
 
 
+# From servers outside India (e.g. Render), a connection to cpcb.gov.in sometimes times out and
+# works when tried again: each download is tried 5 times, with a short wait to connect (a normal
+# connection takes well under a second), and a request's bulletins are downloaded together
+TRIES = 5
+PARALLEL_DOWNLOADS = 6
 RECHECK_S = 600          # while today's bulletin is not out, ask CPCB again at most every 10 minutes
 _last_miss = {}          # day -> when CPCB last had no bulletin for it
 
@@ -62,7 +68,14 @@ def download_bulletin(day):
     """The bulletin PDF for `day`, from the local copy if there is one. None if CPCB has none."""
     path = BULLETIN_DIR / f'AQI_Bulletin_{day:%Y%m%d}.pdf'
     if not path.exists():
-        r = requests.get(BULLETIN_URL.format(day), timeout=(15, 60))     # connect, read
+        for attempt in range(1, TRIES + 1):
+            try:
+                r = requests.get(BULLETIN_URL.format(day), timeout=(5, 60))      # connect, read
+                break
+            except (requests.ConnectionError, requests.Timeout):
+                if attempt == TRIES:
+                    raise
+                time.sleep(attempt)
         if r.status_code != 200 or not r.content.startswith(b'%PDF'):
             return None
         BULLETIN_DIR.mkdir(parents=True, exist_ok=True)
@@ -112,9 +125,10 @@ def read_bulletin(path):
 
 def bulletin_aqi(city, days):
     """One row per day: the city's AQI and prominent pollutants, NaN when the bulletin or the city is missing."""
+    with ThreadPoolExecutor(PARALLEL_DOWNLOADS) as pool:
+        paths = list(pool.map(download_bulletin, days))     # together: after a restart, none are kept
     rows = []
-    for day in days:
-        path = download_bulletin(day)
+    for day, path in zip(days, paths):
         aqi, pollutants = read_bulletin(path).get(city.lower(), (None, [])) if path else (None, [])
         if aqi is None:
             print(f'  no AQI for {city} on {day}' + ('' if path else ': no bulletin'))

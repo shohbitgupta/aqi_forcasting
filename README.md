@@ -87,8 +87,11 @@ aqi_forcasting/
 │   ├── model_decisions.md                 # every modelling decision, with evidence
 │   ├── model_comparison.md                # the four models compared, tuning settings
 │   └── production_plan.md                 # how the forecast would run in production, on demand
+├── deploy/
+│   └── deploy_lambda.sh        # deploys the service to AWS Lambda in one command (optional)
 ├── demo.json                   # an example input for predict.py --input
-├── Dockerfile                  # image for the prediction service
+├── Dockerfile                  # image for the prediction service (local use and AWS Lambda)
+├── Dockerfile.render           # the same image for Render, where the service is deployed
 ├── pyproject.toml, uv.lock     # dependencies, pinned to the versions the model was trained with
 ├── problem_statement.pdf
 └── requirements.txt            # older, unpinned list; use uv instead (see Setup)
@@ -179,6 +182,35 @@ curl -X POST http://localhost:8080/predict -H "Content-Type: application/json" -
 
 - **The alert:** by default, `alert` is true when the forecast is Very Poor or Severe. Each user can set an earlier warning level instead, for example `POST /predict?dangerous_threshold=0.1` raises it when P(Very Poor or Severe) is at least 10%. `severe_threshold` does the same for P(Severe).
 - **Bad input** (a missing field, a wrong type, `month` 13, an unknown city) gets an HTTP 422 answer that says what is wrong.
+
+**Running the service in Docker.** The image holds the service, the model and the pinned libraries (installed from `uv.lock`), and nothing else: no data or notebooks. From the project root, with Docker running:
+
+```bash
+docker build -t aqi-forecast .
+docker run -p 8080:8080 aqi-forecast
+python scripts/test_service.py           # in a second terminal, the same test as above
+```
+
+There are two Dockerfiles; both build the same service and run locally the same way:
+
+| File | For | Difference |
+|---|---|---|
+| `Dockerfile` | local use and AWS Lambda | includes the AWS Lambda Web Adapter, which does nothing outside Lambda |
+| `Dockerfile.render` | Render | no adapter; listens on the port Render gives it (`$PORT`), 8080 otherwise |
+
+**The deployed service.** The service runs on [Render](https://render.com)'s free plan, built from `Dockerfile.render`:
+
+**https://aqi-forcasting.onrender.com** (the interactive docs are at [/docs](https://aqi-forcasting.onrender.com/docs))
+
+```bash
+python scripts/test_service.py --url https://aqi-forcasting.onrender.com
+```
+
+The free plan puts the service to sleep after 15 minutes without requests, so the first request after a quiet spell can take up to a minute; the ones after it are instant.
+
+To deploy your own copy: on Render, **New → Web Service**, connect the GitHub repository and choose **Language: Docker**, **Instance type: Free**, and under **Advanced** set **Dockerfile Path** to `./Dockerfile.render` and **Health Check Path** to `/health`. Every push to `main` deploys again.
+
+`deploy/deploy_lambda.sh` deploys the same service to AWS Lambda instead, with a public Function URL, in one command (`./deploy/deploy_lambda.sh`). It needs the AWS CLI and an AWS account that allows ECR and Lambda; it was not used for the deployment above, because the accounts available blocked those services.
 
 **Making a forecast from the command line.** `scripts/predict.py` also forecasts the next day's category for a city. The input can come from three places:
 
@@ -294,5 +326,5 @@ In production the forecast is **on demand**: a user picks a city in the applicat
 - [x] `scripts/train.py` and the final evaluation on the 2025 test set
 - [x] `scripts/predict.py`: forecasts from a JSON input, the project data (offline) or live CPCB bulletins
 - [x] Web service (FastAPI), returning the predicted category, class probabilities and alert
-- [ ] The service in Docker
-- [ ] Cloud deployment
+- [x] The service in Docker
+- [x] Cloud deployment: https://aqi-forcasting.onrender.com

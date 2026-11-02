@@ -22,6 +22,7 @@ dependencies = [
 dev = [
     "ipykernel",
     "matplotlib>=3.7",
+    "pdfplumber>=0.11.10",
     "requests>=2.31",
     "statsmodels>=0.14",
 ]

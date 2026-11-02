@@ -44,6 +44,7 @@ All data is committed, so the notebooks run straight after cloning. The scripts 
 |---|---|---|
 | Daily AQI bulletins of the Central Pollution Control Board (CPCB) | Compiled by Urban Emissions in [urbanemissionsinfo/AQI_bulletins](https://github.com/urbanemissionsinfo/AQI_bulletins) | [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html) |
 | Historical hourly weather, aggregated to daily values | [Open-Meteo](https://open-meteo.com/) Historical Weather API | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
+| Recent daily AQI bulletins, for live forecasts only | [CPCB](https://cpcb.gov.in/) daily bulletin PDFs, downloaded when a live forecast runs | Public bulletins, not stored in the repository |
 
 Weather data by [Open-Meteo.com](https://open-meteo.com/). The AQI files in `data/` (`data/raw/aqi_bulletins.csv`, `data/processed/AllIndiaBulletinsMaster2025_openrefined.csv` and the files derived from them) are redistributed from the Urban Emissions repository under its GPL-3.0 licence.
 
@@ -58,6 +59,7 @@ aqi_forcasting/
 │   └── merge_data.py           # step 3: merge into one dataset with a full daily calendar
 ├── data/
 │   ├── raw/                    # downloaded files (AQI bulletins, weather per city)
+│   │   └── bulletins/          # CPCB bulletin PDFs for live forecasts: the latest 11 days only, not in git
 │   └── processed/              # aqi_weather_2015_2025.csv is the modelling dataset
 ├── notebooks/                  # understanding the data
 │   ├── eda.ipynb               # exploratory data analysis and decisions
@@ -71,37 +73,46 @@ aqi_forcasting/
 │   ├── model_comparison.ipynb  # ROC AUC of every model
 │   └── models/                 # models saved by the experiments, for comparison only
 ├── scripts/
-│   ├── utility.py              # shared helpers used by the notebooks and train.py
+│   ├── utility.py              # shared helpers used by the notebooks and the scripts
 │   ├── train.py                # trains the final model (XGBoost), tests it once on 2025
-│   └── predict.py              # prediction service (to do)
+│   ├── predict.py              # the prediction web service (FastAPI), and a command line for forecasts
+│   ├── test_service.py         # sends demo.json to the running service and prints the answer
+│   └── validate_live.py        # builds the live input from CPCB bulletins and Open-Meteo (used by predict.py)
 ├── models/                     # the final model only: xgb_final.bin, made by scripts/train.py
 ├── outputs/                    # every notebook run top to bottom, exported to Markdown
+│   └── validation/             # the inputs built by live forecasts, one JSON file per city and day
 ├── docs/
 │   ├── EDA_Decision_Document.pdf          # every EDA decision, with evidence
 │   ├── feature_transformation_notes.md    # reusable notes on encoding and transforms
 │   ├── model_decisions.md                 # every modelling decision, with evidence
 │   ├── model_comparison.md                # the four models compared, tuning settings
 │   └── production_plan.md                 # how the forecast would run in production, on demand
+├── demo.json                   # an example input for predict.py --input
+├── Dockerfile                  # image for the prediction service
+├── pyproject.toml, uv.lock     # dependencies, pinned to the versions the model was trained with
 ├── problem_statement.pdf
-└── requirements.txt
+└── requirements.txt            # older, unpinned list; use uv instead (see Setup)
 ```
 
 ## Setup
 
-Python 3.13 was used; any recent Python 3 should work.
+The project uses [uv](https://docs.astral.sh/uv/) and Python 3.13 (uv downloads it if needed).
 
 ```bash
 git clone https://github.com/shohbitgupta/aqi_forcasting.git
 cd aqi_forcasting
 
-python3 -m venv .env
-source .env/bin/activate            # Windows: .env\Scripts\activate
-pip install -r requirements.txt
+uv sync                             # creates .venv with every dependency, at the versions in uv.lock
+source .venv/bin/activate           # Windows: .venv\Scripts\activate
 
 # Jupyter kernel used by the notebooks
-pip install jupyter ipykernel
-python -m ipykernel install --user --name aqi-forecasting --display-name "Python 3 (aqi_forcasting .env)"
+python -m ipykernel install --user --name aqi-forecasting --display-name "Python 3 (aqi_forcasting .venv)"
+uv run --with jupyter jupyter lab   # to open the notebooks outside VS Code
 ```
+
+The model file is a pickle, so the libraries are pinned to the exact versions it was trained with; other versions may fail to load it. `uv sync --no-dev` installs only what forecasting from a file or from the project data needs. The notebooks, the data download scripts and live forecasts need the dev dependencies too, which `uv sync` installs by default.
+
+The commands below assume `.venv` is active. Without activating it, put `uv run` in front of them, for example `uv run python scripts/train.py`.
 
 ## How to run
 
@@ -132,6 +143,72 @@ python scripts/train.py --output my_model.bin    # or choose where to save it
 ```
 
 The script trains XGBoost with the settings chosen in `experiments/xgb_train.ipynb` on 2015–2024, tests it once on 2025 against persistence, prints the results and saves the model in `models/`. It takes about 10 seconds and does **not** need the experiments' model files.
+
+**The prediction service.** The model runs as a FastAPI web service. Start it from the project root:
+
+```bash
+uvicorn predict:app --app-dir scripts --port 8080
+```
+
+It loads the model once at start-up and has two endpoints:
+
+| Endpoint | What it does |
+|---|---|
+| `GET /health` | Checks the service is up and lists the 14 supported cities |
+| `POST /predict` | Takes one city-day's 27 fields as JSON (see [`demo.json`](demo.json)) and returns the next day's category, the probability of every category, P(Severe), P(Dangerous) and the alert |
+
+Test it in the browser at http://localhost:8080/docs (the request is pre-filled with `demo.json`), or from a second terminal:
+
+```bash
+python scripts/test_service.py           # sends demo.json and prints the answer
+curl -X POST http://localhost:8080/predict -H "Content-Type: application/json" -d @demo.json
+```
+
+```json
+{
+  "city": "Noida",
+  "forecast": "Poor",
+  "p_severe": 0.0015,
+  "p_dangerous": 0.1081,
+  "probabilities": {"Good": 0.0001, "Satisfactory": 0.0072, "Moderate": 0.1741,
+                    "Poor": 0.7105, "Very Poor": 0.1065, "Severe": 0.0015},
+  "alert": false,
+  "alert_rule": "forecast is below Very Poor"
+}
+```
+
+- **The alert:** by default, `alert` is true when the forecast is Very Poor or Severe. Each user can set an earlier warning level instead, for example `POST /predict?dangerous_threshold=0.1` raises it when P(Very Poor or Severe) is at least 10%. `severe_threshold` does the same for P(Severe).
+- **Bad input** (a missing field, a wrong type, `month` 13, an unknown city) gets an HTTP 422 answer that says what is wrong.
+
+**Making a forecast from the command line.** `scripts/predict.py` also forecasts the next day's category for a city. The input can come from three places:
+
+```bash
+# offline: a day from the project's data (2015-2025), shown next to what actually happened
+python scripts/predict.py --mode offline --city Delhi --date 2025-11-15
+
+# live: the latest CPCB bulletins and weather (needs internet)
+python scripts/predict.py --mode live --city Delhi                     # based on yesterday
+python scripts/predict.py --mode live --city Noida --date 2026-10-27   # a past day, with what happened
+
+# your own input: one city-day or a list, with the model's 27 fields (see demo.json)
+python scripts/predict.py --input demo.json
+```
+
+```
+Delhi, based on 2025-11-15: AQI 386 (Very Poor)
+Forecast for 2025-11-16: Very Poor
+Actual on 2025-11-16:   Very Poor, forecast correct
+```
+
+- Leave out `--city` to pick one from the list of 14. `--date` is the last day of data and the forecast is for the day after. It defaults to the city's last day in the data (offline) or to yesterday, the last complete day (live), so a live forecast is for today.
+- **Offline:** only days in 2025, the test year, are a fair check; the model learned from 2015–2024, and the script says so when you pick one of those days.
+- **Live:** the input is built exactly as for training, from the same sources:
+  - the AQI of the last 8 days, read from the CPCB daily bulletin PDFs, the source the training data was compiled from;
+  - 3 more days before them, so a missing day can be filled from the day before, as in training;
+  - that day's weather from the same Open-Meteo archive.
+
+  On 2025 days this gives the same input as the training data, field for field, including days filled from the day before. The input is saved in `outputs/validation/`, so `--input` can run it again, and only the bulletins of the latest window are kept in `data/raw/bulletins/`. Live mode needs the dev dependencies (`requests`, `pdfplumber`).
+- **Why the CPCB bulletins:** an easier source was tried first, the Open-Meteo air-quality API, which gives pollution levels estimated by the CAMS model rather than measured. Its AQI was in the same category as CPCB's on only 29% of 2025 days, and forecasts made from it were right on 33% of days instead of 75%. The model needs the same kind of data it learned from.
 
 **macOS: XGBoost needs OpenMP.** If `import xgboost` fails with `libomp.dylib could not be loaded`, install it with `brew install libomp`.
 
@@ -215,5 +292,7 @@ In production the forecast is **on demand**: a user picks a city in the applicat
 - [x] Tree models (decision tree, random forest, XGBoost) and tuning
 - [x] Final model chosen: XGBoost ([`docs/model_comparison.md`](docs/model_comparison.md))
 - [x] `scripts/train.py` and the final evaluation on the 2025 test set
-- [ ] `scripts/predict.py`
-- [ ] Web service (FastAPI or Flask) in Docker, returning the predicted category and class probabilities
+- [x] `scripts/predict.py`: forecasts from a JSON input, the project data (offline) or live CPCB bulletins
+- [x] Web service (FastAPI), returning the predicted category, class probabilities and alert
+- [ ] The service in Docker
+- [ ] Cloud deployment

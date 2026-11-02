@@ -59,7 +59,7 @@ aqi_forcasting/
 │   └── merge_data.py           # step 3: merge into one dataset with a full daily calendar
 ├── data/
 │   ├── raw/                    # downloaded files (AQI bulletins, weather per city)
-│   │   └── bulletins/          # CPCB bulletin PDFs for live forecasts: the latest 11 days only, not in git
+│   │   └── bulletins/          # CPCB bulletin PDFs for live forecasts: the latest 12 days only (11 for the forecast, 1 more for the check), not in git
 │   └── processed/              # aqi_weather_2015_2025.csv is the modelling dataset
 ├── notebooks/                  # understanding the data
 │   ├── eda.ipynb               # exploratory data analysis and decisions
@@ -75,9 +75,9 @@ aqi_forcasting/
 ├── scripts/
 │   ├── utility.py              # shared helpers used by the notebooks and the scripts
 │   ├── train.py                # trains the final model (XGBoost), tests it once on 2025
-│   ├── predict.py              # the prediction web service (FastAPI), and a command line for forecasts
-│   ├── test_service.py         # calls the running service (demo.json, or a live forecast) and prints the answer
-│   └── validate_live.py        # builds the live input from CPCB bulletins and Open-Meteo (used by predict.py and the service)
+│   ├── predict.py              # the prediction web service (FastAPI)
+│   ├── forecast.py             # forecasts from the command line: offline, live or from a JSON file
+│   └── live_data.py            # builds the live input from CPCB bulletins and Open-Meteo (used by forecast.py and the service)
 ├── models/                     # the final model only: xgb_final.bin, made by scripts/train.py
 ├── outputs/                    # every notebook run top to bottom, exported to Markdown
 │   └── validation/             # the inputs built by live forecasts, one JSON file per city and day, not in git
@@ -89,7 +89,7 @@ aqi_forcasting/
 │   └── production_plan.md                 # how the forecast would run in production, on demand
 ├── deploy/
 │   └── deploy_lambda.sh        # deploys the service to AWS Lambda in one command (optional)
-├── demo.json                   # an example input for predict.py --input
+├── demo.json                   # an example input: for POST /predict and forecast.py --input
 ├── Dockerfile                  # image for the prediction service (local use and AWS Lambda)
 ├── Dockerfile.render           # the same image for Render, where the service is deployed
 ├── pyproject.toml, uv.lock     # dependencies, pinned to the versions the model was trained with
@@ -113,7 +113,7 @@ python -m ipykernel install --user --name aqi-forecasting --display-name "Python
 uv run --with jupyter jupyter lab   # to open the notebooks outside VS Code
 ```
 
-The model file is a pickle, so the libraries are pinned to the exact versions it was trained with; other versions may fail to load it. `uv sync --no-dev` installs only what the prediction service and `predict.py` need, live forecasts included. The notebooks and the data download scripts need the dev dependencies too, which `uv sync` installs by default.
+The model file is a pickle, so the libraries are pinned to the exact versions it was trained with; other versions may fail to load it. `uv sync --no-dev` installs only what the prediction service and `forecast.py` need, live forecasts included. The notebooks and the data download scripts need the dev dependencies too, which `uv sync` installs by default.
 
 The commands below assume `.venv` is active. Without activating it, put `uv run` in front of them, for example `uv run python scripts/train.py`.
 
@@ -159,13 +159,11 @@ It loads the model once at start-up and has two endpoints:
 |---|---|
 | `GET /health` | Checks the service is up and lists the 14 supported cities |
 | `POST /predict` | Takes one city-day's 27 fields as JSON (see [`demo.json`](demo.json)) and returns the next day's category, the probability of every category, P(Severe), P(Dangerous) and the alert |
-| `POST /predict?live=true` | Takes only the city, `{"city": "Delhi"}`, and gives today's forecast from the latest real data: the service builds the 27 fields itself from the CPCB bulletins and the weather (see the command line's live mode below). The answer is the same, with the dates and the input it built |
+| `POST /predict?live=true` | Takes only the city, `{"city": "Delhi"}`, and forecasts the next day from the latest real data: the service builds the 27 fields itself from the CPCB bulletins and the weather (see the command line's live mode below). The answer is the same, with the dates, the input it built and a `check` of how the model did on the latest day |
 
 Test it in the browser at http://localhost:8080/docs (the request is pre-filled with `demo.json`), or from a second terminal:
 
 ```bash
-python scripts/test_service.py           # sends demo.json and prints the answer
-python scripts/test_service.py --live Delhi
 curl -X POST http://localhost:8080/predict -H "Content-Type: application/json" -d @demo.json
 curl -X POST "http://localhost:8080/predict?live=true" -H "Content-Type: application/json" -d '{"city": "Delhi"}'
 ```
@@ -185,14 +183,14 @@ curl -X POST "http://localhost:8080/predict?live=true" -H "Content-Type: applica
 
 - **The alert:** by default, `alert` is true when the forecast is Very Poor or Severe. Each user can set an earlier warning level instead, for example `POST /predict?dangerous_threshold=0.1` raises it when P(Very Poor or Severe) is at least 10%. `severe_threshold` does the same for P(Severe).
 - **Bad input** (a missing field, a wrong type, `month` 13, an unknown city, or only the city without `live=true`) gets an HTTP 422 answer that says what is wrong.
-- **Live forecasts** need 11 days of bulletins (see below). The service keeps them, so after its first live request it downloads only the newest bulletin each day, and a forecast takes about a second; the first request after the service starts takes up to about 20 seconds. If CPCB cannot be reached the answer is HTTP 502, and if its bulletins miss too many days, HTTP 503.
+- **Live forecasts** need 11 days of bulletins (see below), and the check one more. The service keeps them, so after its first live request it downloads only the newest bulletin each day, and a forecast takes about a second; the first request after the service starts takes up to about 20 seconds. If CPCB cannot be reached the answer is HTTP 502, and if its bulletins miss too many days, HTTP 503.
 
 **Running the service in Docker.** The image holds the service, the model and the pinned libraries (installed from `uv.lock`), and nothing else: no data or notebooks. From the project root, with Docker running:
 
 ```bash
 docker build -t aqi-forecast .
 docker run -p 8080:8080 aqi-forecast
-python scripts/test_service.py           # in a second terminal, the same test as above
+curl -X POST http://localhost:8080/predict -H "Content-Type: application/json" -d @demo.json   # in a second terminal
 ```
 
 There are two Dockerfiles; both build the same service and run locally the same way:
@@ -207,8 +205,8 @@ There are two Dockerfiles; both build the same service and run locally the same 
 **https://aqi-forcasting.onrender.com** (the interactive docs are at [/docs](https://aqi-forcasting.onrender.com/docs))
 
 ```bash
-python scripts/test_service.py --url https://aqi-forcasting.onrender.com
-python scripts/test_service.py --url https://aqi-forcasting.onrender.com --live Delhi
+curl -X POST https://aqi-forcasting.onrender.com/predict -H "Content-Type: application/json" -d @demo.json
+curl -X POST "https://aqi-forcasting.onrender.com/predict?live=true" -H "Content-Type: application/json" -d '{"city": "Delhi"}'
 ```
 
 Or in the browser, on the [/docs](https://aqi-forcasting.onrender.com/docs) page: open `POST /predict`, **Try it out**, set `live` to `true` and choose the example "live=true: only the city".
@@ -219,18 +217,18 @@ To deploy your own copy: on Render, **New → Web Service**, connect the GitHub 
 
 `deploy/deploy_lambda.sh` deploys the same service to AWS Lambda instead, with a public Function URL, in one command (`./deploy/deploy_lambda.sh`). It needs the AWS CLI and an AWS account that allows ECR and Lambda; it was not used for the deployment above, because the accounts available blocked those services.
 
-**Making a forecast from the command line.** `scripts/predict.py` also forecasts the next day's category for a city. The input can come from three places:
+**Making a forecast from the command line.** `scripts/forecast.py` forecasts the next day's category for a city without the web service, using the same functions. The input can come from three places:
 
 ```bash
 # offline: a day from the project's data (2015-2025), shown next to what actually happened
-python scripts/predict.py --mode offline --city Delhi --date 2025-11-15
+python scripts/forecast.py --mode offline --city Delhi --date 2025-11-15
 
 # live: the latest CPCB bulletins and weather (needs internet)
-python scripts/predict.py --mode live --city Delhi                     # based on yesterday
-python scripts/predict.py --mode live --city Noida --date 2026-10-27   # a past day, with what happened
+python scripts/forecast.py --mode live --city Delhi                     # based on the latest bulletin
+python scripts/forecast.py --mode live --city Noida --date 2026-10-27   # a past day, with what happened
 
-# your own input: one city-day or a list, with the model's 27 fields (see demo.json)
-python scripts/predict.py --input demo.json
+# your own input: one city-day, with the model's 27 fields (see demo.json)
+python scripts/forecast.py --input demo.json
 ```
 
 ```
@@ -239,7 +237,15 @@ Forecast for 2025-11-16: Very Poor
 Actual on 2025-11-16:   Very Poor, forecast correct
 ```
 
-- Leave out `--city` to pick one from the list of 14. `--date` is the last day of data and the forecast is for the day after. It defaults to the city's last day in the data (offline) or to yesterday, the last complete day (live), so a live forecast is for today.
+```
+Check for 2026-11-02: forecast Poor (from the day before's data), actual AQI 324 (Very Poor): missed
+Delhi, based on 2026-11-02: AQI 324 (Very Poor)
+Forecast for 2026-11-03: Poor
+```
+
+- `--city` is one of the 14 cities, in any case. `--date` is the last day of data and the forecast is for the day after. It defaults to the city's last day in the data (offline) or, live, to the latest bulletin: CPCB publishes each day's bulletin at about 4 PM IST, so after that the forecast is based on today and is for tomorrow; before it, it is based on yesterday and is for today, whose bulletin is not out yet.
+- **The check (live):** with every live forecast, the model's forecast for the latest day, made from the day before's data, is shown against that day's actual AQI from the bulletin, the same source the model learned from. This shows how the model is doing on current data. The CPCB live dashboard is not used for this: it shows hourly readings per station, while the model forecasts the bulletin's daily city AQI, so the two would differ even for a perfect forecast.
+- **Weather for today:** when the forecast is based on today, the evening hours of today's weather are Open-Meteo's estimates, not yet measurements; in training, every hour was measured. The daily averages differ little.
 - **Offline:** only days in 2025, the test year, are a fair check; the model learned from 2015–2024, and the script says so when you pick one of those days.
 - **Live:** the input is built exactly as for training, from the same sources:
   - the AQI of the last 8 days, read from the CPCB daily bulletin PDFs, the source the training data was compiled from;
@@ -331,7 +337,7 @@ In production the forecast is **on demand**: a user picks a city in the applicat
 - [x] Tree models (decision tree, random forest, XGBoost) and tuning
 - [x] Final model chosen: XGBoost ([`docs/model_comparison.md`](docs/model_comparison.md))
 - [x] `scripts/train.py` and the final evaluation on the 2025 test set
-- [x] `scripts/predict.py`: forecasts from a JSON input, the project data (offline) or live CPCB bulletins
+- [x] `scripts/forecast.py`: forecasts from a JSON input, the project data (offline) or live CPCB bulletins
 - [x] Web service (FastAPI), returning the predicted category, class probabilities and alert
 - [x] Live forecasts in the service (`POST /predict?live=true`), built from the latest CPCB bulletins
 - [x] The service in Docker

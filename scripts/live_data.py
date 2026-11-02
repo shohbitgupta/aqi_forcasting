@@ -1,6 +1,6 @@
-"""Build the model's input for a city from real, recent data: the live mode of predict.py.
+"""Build the model's input for a city from real, recent data: live forecasts.
 
-    python scripts/predict.py --mode live --city Delhi          # command line
+    python scripts/forecast.py --mode live --city Delhi         # command line
     POST /predict?live=true  {"city": "Delhi"}                  # the web service
 
 The data comes from the same sources as the training data:
@@ -12,6 +12,7 @@ The data comes from the same sources as the training data:
 import os
 import re
 import sys
+import time
 from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -38,15 +39,30 @@ BULLETIN_ROW = re.compile(r'\d+ (.+?) (?:Good|Satisfactory|Moderate|Poor|Very Po
                           r'(\d+(?:\.\d+)?) (.*?) ?\d+/\d+')
 
 
-def yesterday():
-    return datetime.now(ZoneInfo('Asia/Kolkata')).date() - timedelta(days=1)
+RECHECK_S = 600          # while today's bulletin is not out, ask CPCB again at most every 10 minutes
+_last_miss = {}          # day -> when CPCB last had no bulletin for it
+
+
+def latest_day():
+    """The newest day with a bulletin: today once CPCB has published it (about 4 PM IST), else yesterday.
+
+    A forecast from it is for the next day, so after about 4 PM it is for tomorrow."""
+    today = datetime.now(ZoneInfo('Asia/Kolkata')).date()
+    if time.monotonic() - _last_miss.get(today, -RECHECK_S) >= RECHECK_S:
+        try:
+            if download_bulletin(today):
+                return today
+        except requests.RequestException:
+            pass                         # CPCB not reachable now: use yesterday's, which is usually kept
+        _last_miss[today] = time.monotonic()
+    return today - timedelta(days=1)
 
 
 def download_bulletin(day):
     """The bulletin PDF for `day`, from the local copy if there is one. None if CPCB has none."""
     path = BULLETIN_DIR / f'AQI_Bulletin_{day:%Y%m%d}.pdf'
     if not path.exists():
-        r = requests.get(BULLETIN_URL.format(day), timeout=60)
+        r = requests.get(BULLETIN_URL.format(day), timeout=(15, 60))     # connect, read
         if r.status_code != 200 or not r.content.startswith(b'%PDF'):
             return None
         BULLETIN_DIR.mkdir(parents=True, exist_ok=True)

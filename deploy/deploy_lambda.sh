@@ -96,5 +96,5 @@ echo "Deployed: $URL"
 echo "Checking $URL/health (the first request loads the model: allow a few seconds)..."
 curl -s --max-time 60 "$URL/health" && echo
 echo
-echo "Test it:   uv run python scripts/test_service.py --url $URL"
+echo "Test it:   curl -X POST \"$URL/predict?live=true\" -H 'Content-Type: application/json' -d '{\"city\": \"Delhi\"}'"
 echo "Browser:   $URL/docs"

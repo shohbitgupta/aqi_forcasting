@@ -4,7 +4,7 @@
 !uv.lock
 !scripts/predict.py
 !scripts/utility.py
-!scripts/validate_live.py
+!scripts/live_data.py
 !code/cities.py
 !code/download_weather.py
 !models/xgb_final.bin

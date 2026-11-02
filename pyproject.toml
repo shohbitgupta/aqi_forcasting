@@ -15,7 +15,7 @@ dependencies = [
     "xgboost-cpu==3.4.1; sys_platform == 'linux'",   # same library without the GPU parts: a smaller image
     "fastapi",
     "uvicorn",
-    # live forecasts (POST /predict?live=true, predict.py --mode live): download and read the CPCB bulletins
+    # live forecasts (POST /predict?live=true, forecast.py --mode live): download and read the CPCB bulletins
     "pypdfium2>=5.14",
     "requests>=2.31",
 ]

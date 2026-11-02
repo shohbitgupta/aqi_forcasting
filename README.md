@@ -76,11 +76,11 @@ aqi_forcasting/
 │   ├── utility.py              # shared helpers used by the notebooks and the scripts
 │   ├── train.py                # trains the final model (XGBoost), tests it once on 2025
 │   ├── predict.py              # the prediction web service (FastAPI), and a command line for forecasts
-│   ├── test_service.py         # sends demo.json to the running service and prints the answer
-│   └── validate_live.py        # builds the live input from CPCB bulletins and Open-Meteo (used by predict.py)
+│   ├── test_service.py         # calls the running service (demo.json, or a live forecast) and prints the answer
+│   └── validate_live.py        # builds the live input from CPCB bulletins and Open-Meteo (used by predict.py and the service)
 ├── models/                     # the final model only: xgb_final.bin, made by scripts/train.py
 ├── outputs/                    # every notebook run top to bottom, exported to Markdown
-│   └── validation/             # the inputs built by live forecasts, one JSON file per city and day
+│   └── validation/             # the inputs built by live forecasts, one JSON file per city and day, not in git
 ├── docs/
 │   ├── EDA_Decision_Document.pdf          # every EDA decision, with evidence
 │   ├── feature_transformation_notes.md    # reusable notes on encoding and transforms
@@ -113,7 +113,7 @@ python -m ipykernel install --user --name aqi-forecasting --display-name "Python
 uv run --with jupyter jupyter lab   # to open the notebooks outside VS Code
 ```
 
-The model file is a pickle, so the libraries are pinned to the exact versions it was trained with; other versions may fail to load it. `uv sync --no-dev` installs only what forecasting from a file or from the project data needs. The notebooks, the data download scripts and live forecasts need the dev dependencies too, which `uv sync` installs by default.
+The model file is a pickle, so the libraries are pinned to the exact versions it was trained with; other versions may fail to load it. `uv sync --no-dev` installs only what the prediction service and `predict.py` need, live forecasts included. The notebooks and the data download scripts need the dev dependencies too, which `uv sync` installs by default.
 
 The commands below assume `.venv` is active. Without activating it, put `uv run` in front of them, for example `uv run python scripts/train.py`.
 
@@ -159,12 +159,15 @@ It loads the model once at start-up and has two endpoints:
 |---|---|
 | `GET /health` | Checks the service is up and lists the 14 supported cities |
 | `POST /predict` | Takes one city-day's 27 fields as JSON (see [`demo.json`](demo.json)) and returns the next day's category, the probability of every category, P(Severe), P(Dangerous) and the alert |
+| `POST /predict?live=true` | Takes only the city, `{"city": "Delhi"}`, and gives today's forecast from the latest real data: the service builds the 27 fields itself from the CPCB bulletins and the weather (see the command line's live mode below). The answer is the same, with the dates and the input it built |
 
 Test it in the browser at http://localhost:8080/docs (the request is pre-filled with `demo.json`), or from a second terminal:
 
 ```bash
 python scripts/test_service.py           # sends demo.json and prints the answer
+python scripts/test_service.py --live Delhi
 curl -X POST http://localhost:8080/predict -H "Content-Type: application/json" -d @demo.json
+curl -X POST "http://localhost:8080/predict?live=true" -H "Content-Type: application/json" -d '{"city": "Delhi"}'
 ```
 
 ```json
@@ -181,7 +184,8 @@ curl -X POST http://localhost:8080/predict -H "Content-Type: application/json" -
 ```
 
 - **The alert:** by default, `alert` is true when the forecast is Very Poor or Severe. Each user can set an earlier warning level instead, for example `POST /predict?dangerous_threshold=0.1` raises it when P(Very Poor or Severe) is at least 10%. `severe_threshold` does the same for P(Severe).
-- **Bad input** (a missing field, a wrong type, `month` 13, an unknown city) gets an HTTP 422 answer that says what is wrong.
+- **Bad input** (a missing field, a wrong type, `month` 13, an unknown city, or only the city without `live=true`) gets an HTTP 422 answer that says what is wrong.
+- **Live forecasts** need 11 days of bulletins (see below). The service keeps them, so after its first live request it downloads only the newest bulletin each day, and a forecast takes about a second; the first request after the service starts takes up to about 20 seconds. If CPCB cannot be reached the answer is HTTP 502, and if its bulletins miss too many days, HTTP 503.
 
 **Running the service in Docker.** The image holds the service, the model and the pinned libraries (installed from `uv.lock`), and nothing else: no data or notebooks. From the project root, with Docker running:
 
@@ -204,7 +208,10 @@ There are two Dockerfiles; both build the same service and run locally the same 
 
 ```bash
 python scripts/test_service.py --url https://aqi-forcasting.onrender.com
+python scripts/test_service.py --url https://aqi-forcasting.onrender.com --live Delhi
 ```
+
+Or in the browser, on the [/docs](https://aqi-forcasting.onrender.com/docs) page: open `POST /predict`, **Try it out**, set `live` to `true` and choose the example "live=true: only the city".
 
 The free plan puts the service to sleep after 15 minutes without requests, so the first request after a quiet spell can take up to a minute; the ones after it are instant.
 
@@ -239,7 +246,7 @@ Actual on 2025-11-16:   Very Poor, forecast correct
   - 3 more days before them, so a missing day can be filled from the day before, as in training;
   - that day's weather from the same Open-Meteo archive.
 
-  On 2025 days this gives the same input as the training data, field for field, including days filled from the day before. The input is saved in `outputs/validation/`, so `--input` can run it again, and only the bulletins of the latest window are kept in `data/raw/bulletins/`. Live mode needs the dev dependencies (`requests`, `pdfplumber`).
+  On 2025 days this gives the same input as the training data, field for field, including days filled from the day before. The input is saved in `outputs/validation/`, so `--input` can run it again, and only the bulletins of the latest window are kept in `data/raw/bulletins/`. The bulletins are read from the PDF's text with `pypdfium2`; on every row of 19 bulletins from 2025 and 2026 this gives the same values as reading its tables, 40 times faster.
 - **Why the CPCB bulletins:** an easier source was tried first, the Open-Meteo air-quality API, which gives pollution levels estimated by the CAMS model rather than measured. Its AQI was in the same category as CPCB's on only 29% of 2025 days, and forecasts made from it were right on 33% of days instead of 75%. The model needs the same kind of data it learned from.
 
 **macOS: XGBoost needs OpenMP.** If `import xgboost` fails with `libomp.dylib could not be loaded`, install it with `brew install libomp`.
@@ -326,5 +333,6 @@ In production the forecast is **on demand**: a user picks a city in the applicat
 - [x] `scripts/train.py` and the final evaluation on the 2025 test set
 - [x] `scripts/predict.py`: forecasts from a JSON input, the project data (offline) or live CPCB bulletins
 - [x] Web service (FastAPI), returning the predicted category, class probabilities and alert
+- [x] Live forecasts in the service (`POST /predict?live=true`), built from the latest CPCB bulletins
 - [x] The service in Docker
 - [x] Cloud deployment: https://aqi-forcasting.onrender.com

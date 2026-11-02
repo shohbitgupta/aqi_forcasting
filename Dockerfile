@@ -10,6 +10,8 @@ COPY --from=ghcr.io/astral-sh/uv:0.10.12 /uv /bin/uv
 # app on port 8080. Outside Lambda it does nothing, so `docker run` works as before.
 COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0 /lambda-adapter /opt/extensions/lambda-adapter
 ENV AWS_LWA_READINESS_CHECK_PATH=/health
+# On Lambda only /tmp can be written to: keep the downloaded CPCB bulletins there
+ENV AQI_BULLETIN_DIR=/tmp/bulletins
 
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 \
@@ -24,7 +26,9 @@ RUN uv sync --frozen --no-dev --no-cache
 
 # 2. The service and the model, in the same folders as in the project, so predict.py finds
 #    the model at ../models/. utility.py is needed to load it: the pickle refers to utility.CategoryXGB.
-COPY scripts/predict.py scripts/utility.py ./scripts/
+#    validate_live.py and the two files from code/ build the input for live forecasts (/predict?live=true).
+COPY scripts/predict.py scripts/utility.py scripts/validate_live.py ./scripts/
+COPY code/cities.py code/download_weather.py ./code/
 COPY models/xgb_final.bin ./models/
 
 EXPOSE 8080

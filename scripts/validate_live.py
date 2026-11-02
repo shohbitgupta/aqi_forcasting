@@ -1,21 +1,24 @@
 """Build the model's input for a city from real, recent data: the live mode of predict.py.
 
-    uv run python scripts/predict.py --mode live --city Delhi
+    python scripts/predict.py --mode live --city Delhi          # command line
+    POST /predict?live=true  {"city": "Delhi"}                  # the web service
 
 The data comes from the same sources as the training data:
   - AQI: the CPCB daily bulletin (a PDF per day, 4 PM, average of the past 24 hours), the source
-    the training file was compiled from. Only the bulletins of the latest window are kept, in data/raw/bulletins/.
+    the training file was compiled from. Only the bulletins of the latest window are kept, in data/raw/bulletins/
+    (or in $AQI_BULLETIN_DIR, for a server where the project folder is read-only).
   - weather: the Open-Meteo archive API, with the same daily aggregation as code/download_weather.py
-
-Needs the dev dependencies (requests, pdfplumber), so run it with `uv run`, not `uv run --no-dev`.
 """
+import os
+import re
 import sys
 from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-import pdfplumber
+import pypdfium2
 import requests
 
 from utility import ffill_aqi, add_trend_features
@@ -26,11 +29,13 @@ from cities import CITIES                                 # noqa: E402
 from download_weather import fetch_hourly, to_daily       # noqa: E402
 
 BULLETIN_URL = 'https://cpcb.gov.in/upload/Downloads/AQI_Bulletin_{:%Y%m%d}.pdf'
-BULLETIN_DIR = PROJECT_DIR / 'data' / 'raw' / 'bulletins'
+BULLETIN_DIR = Path(os.environ.get('AQI_BULLETIN_DIR', PROJECT_DIR / 'data' / 'raw' / 'bulletins'))
 HISTORY_DAYS = 8          # aqi_dev7 compares the day with the mean of the 7 days before it
 FILL_LIMIT = 3            # as in training: a missing day takes the last AQI, up to 3 days back
 POLLUTANTS = ['co', 'no2', 'o3', 'pm10', 'pm25', 'so2']
-SUBSCRIPTED = {'PM', 'NO', 'SO', 'O', 'NH'}              # written PM₁₀, NO₂, ...: the subscript is a separate line
+# A row of the bulletin's table: S.No, City, Air Quality, Index Value, Prominent Pollutants, Stations
+BULLETIN_ROW = re.compile(r'\d+ (.+?) (?:Good|Satisfactory|Moderate|Poor|Very Poor|Severe) '
+                          r'(\d+(?:\.\d+)?) (.*?) ?\d+/\d+')
 
 
 def yesterday():
@@ -45,7 +50,10 @@ def download_bulletin(day):
         if r.status_code != 200 or not r.content.startswith(b'%PDF'):
             return None
         BULLETIN_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(r.content)
+        # Write, then rename: a request reading the file at the same moment never sees half of it
+        partial = path.with_suffix(f'.{os.getpid()}.{id(r)}.part')
+        partial.write_bytes(r.content)
+        partial.replace(path)
     return path
 
 
@@ -56,29 +64,33 @@ def prune_bulletins(keep_from):
             path.unlink()
 
 
-def parse_pollutants(cell):
-    """'PM , PM\\n2.5 10' -> ['PM2.5', 'PM10']: the subscripts are on the second line, in order."""
-    lines = (cell or '').split('\n')
-    names = [n.strip() for n in lines[0].split(',') if n.strip()]
-    subscripts = lines[1].split() if len(lines) > 1 else []
-    return [n + subscripts.pop(0) if n in SUBSCRIPTED and subscripts else n for n in names]
-
-
+@lru_cache(maxsize=16)
 def read_bulletin(path):
-    """{city in lower case: (AQI, prominent pollutants)} for every city in the bulletin."""
-    rows = {}
-    with pdfplumber.open(path) as pdf:
-        for page in pdf.pages:
-            for table in page.extract_tables():
-                for row in table:
-                    # Data rows: S.No, City, Air Quality, Index Value, Prominent Pollutant, Stations
-                    if len(row) < 5 or not (row[0] or '').strip().isdigit():
-                        continue
-                    try:
-                        aqi = float(row[3])
-                    except (TypeError, ValueError):
-                        continue
-                    rows[' '.join(row[1].split()).lower()] = (aqi, parse_pollutants(row[4]))
+    """{city in lower case: (AQI, prominent pollutants)} for every city in the bulletin.
+
+    It reads the PDF's text, a few hundredths of a second per bulletin, rather than its tables, which
+    is 30 times slower: that matters on a small server. A day's bulletin never changes, so the web
+    service also keeps each one in memory once read.
+    """
+    pdf = pypdfium2.PdfDocument(path)
+    try:
+        lines = [line for page in pdf for line in page.get_textpage().get_text_range().splitlines()]
+    finally:
+        pdf.close()
+    # A row can be split over several lines, e.g. a long city name or a pollutant after O3:
+    # join lines from one that starts with the row number until they make a whole row
+    rows, parts = {}, []
+    for line in lines:
+        line = ' '.join(line.split())
+        if not parts and not line[:1].isdigit():
+            continue                                   # a heading, not part of a row
+        parts.append(line)
+        if match := BULLETIN_ROW.fullmatch(' '.join(parts)):
+            city, aqi, pollutants = match.groups()
+            rows[city.lower()] = (float(aqi), [p.strip() for p in pollutants.split(',') if p.strip()])
+            parts = []
+        elif len(parts) > 12:                          # not a row after all
+            parts = []
     return rows
 
 
@@ -111,7 +123,7 @@ def build_record(city, day):
         raise RuntimeError(f'not enough CPCB data for {city} up to {day}: the bulletins miss too many days')
 
     lat, lon = CITIES[city]
-    weather = to_daily(fetch_hourly(lat, lon, str(day), str(day))).iloc[0]
+    weather = to_daily(fetch_hourly(lat, lon, str(day), str(day), retries=2)).iloc[0]
 
     record = {'city': city, 'month': int(today['month'])}
     for col in trend:

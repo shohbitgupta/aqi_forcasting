@@ -1,6 +1,8 @@
 """Predict the next day's AQI category for a city with the final model: a web service and a command line.
 
-Web service (FastAPI): POST one city-day's 27 fields to /predict, get the forecast, probabilities and alert.
+Web service (FastAPI): POST one city-day's 27 fields to /predict, get the forecast, probabilities and alert;
+or POST only {"city": "Delhi"} to /predict?live=true, and the service builds the fields from the latest
+CPCB bulletins itself.
 
     uvicorn predict:app --app-dir scripts --port 8080          # then open http://localhost:8080/docs
 
@@ -8,11 +10,10 @@ Command line:
 
     python scripts/predict.py --input day.json                                 # your own input: one record or a list
     python scripts/predict.py --mode offline --city Delhi --date 2025-11-15    # a day from the project's data
-    uv run python scripts/predict.py --mode live --city Delhi                  # yesterday's CPCB bulletins
+    python scripts/predict.py --mode live --city Delhi                         # yesterday's CPCB bulletins
 
 offline: the input comes from data/processed (2015-2025); --date defaults to the city's last day.
 live:    the input is built from the CPCB bulletins (see validate_live.py); --date defaults to yesterday.
-         It downloads data, so it needs the dev dependencies: `uv run`, not `uv run --no-dev`.
 In both modes --city is asked for when left out, and for a past day the forecast is shown
 next to what actually happened.
 """
@@ -21,14 +22,17 @@ import json
 import pickle
 import sys
 from contextlib import asynccontextmanager
+from typing import Annotated
 from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query
+import requests
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Discriminator, Field, Tag
 
+import validate_live as live
 from utility import aqi_to_category, prepare_dataset, proba_table   # the pickle also needs utility (CategoryXGB)
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -45,6 +49,11 @@ def load_model(path=MODEL_PATH):
 
 def feature_names(bundle):
     return bundle['features']['numeric'] + bundle['features']['binary'] + bundle['features']['categorical']
+
+
+def find_city(name, bundle):
+    """The model's spelling of a city name typed in any case, or None if the model does not know it."""
+    return {c.lower(): c for c in bundle['cities']}.get(name.strip().lower())
 
 
 def check_record(record, bundle):
@@ -128,6 +137,26 @@ class CityDay(BaseModel):
     aqi_imputed: int = Field(ge=0, le=1, description='1 if the AQI was filled from an earlier day')
 
 
+class LiveCity(BaseModel):
+    """With live=true, only the city: the service builds the other fields from the latest real data."""
+    model_config = {'extra': 'forbid'}
+
+    city: str = Field(description='one of the 14 cities, in any case, e.g. Delhi')
+
+
+def body_kind(body):
+    """'live' for a body with only the city, 'fields' otherwise: a wrong body is then checked
+    against one shape only, so the error lists what is wrong with it and nothing else."""
+    keys = set(body) if isinstance(body, dict) else set(type(body).model_fields)
+    return 'live' if keys == {'city'} else 'fields'
+
+
+Body27OrCity = Annotated[Annotated[CityDay, Tag('fields')] | Annotated[LiveCity, Tag('live')],
+                         Discriminator(body_kind), Body(openapi_examples={
+                             'fields': {'summary': 'live=false: the 27 fields (demo.json)', 'value': EXAMPLE},
+                             'live': {'summary': 'live=true: only the city', 'value': {'city': 'Delhi'}}})]
+
+
 @asynccontextmanager
 async def lifespan(app):
     app.state.bundle = load_model()            # once, when the server starts: not on every request
@@ -149,22 +178,52 @@ def health():
 
 
 @app.post('/predict')
-def forecast(day: CityDay, severe_threshold: float | None = Query(None, ge=0, le=1),
+def forecast(day: Body27OrCity,
+             use_live: bool = Query(False, alias='live', description=(
+                 'true: send only the city, and the service builds the 27 fields from the latest '
+                 'CPCB bulletins and weather; false: send the 27 fields')),
+             severe_threshold: float | None = Query(None, ge=0, le=1),
              dangerous_threshold: float | None = Query(None, ge=0, le=1)):
     """The next day's category, every category's probability, and whether to raise an alert.
+
+    live=false (the default): the body is one city-day's 27 fields, as in demo.json.
+    live=true: the body is only the city, and the forecast is for today. The service builds the
+    27 fields the way `predict.py --mode live` does, from yesterday's CPCB bulletin, the 10 before
+    it and yesterday's weather, and adds them to the answer with the dates. Bulletins are kept, so
+    after the first live request only the newest one is downloaded; that first request takes longer.
 
     Without thresholds the alert is raised when the forecast is Very Poor or Severe. With them,
     it is raised when P(Severe) or P(Very Poor or Severe) reaches the threshold.
     """
     bundle = app.state.bundle
-    record = day.model_dump()
-    try:
-        check_record(record, bundle)                     # e.g. a city the model does not know
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    if use_live != isinstance(day, LiveCity):
+        raise HTTPException(status_code=422, detail=(
+            'with live=true send only the city, e.g. {"city": "Delhi"}' if use_live else
+            'only the city was sent: add ?live=true for a forecast from live data, or send all 27 fields'))
+    if use_live:
+        city = find_city(day.city, bundle)
+        if city is None:
+            raise HTTPException(status_code=422, detail=f"unknown city {day.city!r}; known cities: {bundle['cities']}")
+        based_on = live.yesterday()                     # the last complete day: its bulletin is out
+        try:
+            record = live.build_record(city, based_on)
+        except requests.RequestException as e:
+            raise HTTPException(status_code=502, detail=f'could not reach CPCB: {e}')
+        except RuntimeError as e:                       # too many missing bulletins, or no weather
+            raise HTTPException(status_code=503, detail=str(e))
+        live.prune_bulletins(live.window_start(based_on))
+    else:
+        record = day.model_dump()
+        try:
+            check_record(record, bundle)                # e.g. a city the model does not know
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
     result = predict([record], bundle)[0]
     alert, rule = decide_alert(result, severe_threshold, dangerous_threshold)
-    return {**result, 'alert': alert, 'alert_rule': rule}
+    answer = {**result, 'alert': alert, 'alert_rule': rule}
+    if use_live:
+        answer.update(based_on=based_on, forecast_for=based_on + timedelta(days=1), input=record)
+    return answer
 
 
 # Command line --------------------------------------------------------------------------------------
@@ -208,10 +267,6 @@ def offline_case(bundle, city, day):
 
 def live_case(city, day):
     """The input for `city` on `day` from the CPCB bulletins, and the AQI that followed if it is known."""
-    try:
-        import validate_live as live          # only here: it needs requests and pdfplumber (dev dependencies)
-    except ImportError as e:
-        sys.exit(f'live mode needs the dev dependencies ({e.name}): run it with `uv run`, not `uv run --no-dev`')
     day = day or live.yesterday()
     if day > live.yesterday():
         raise ValueError(f'--date must be a complete day: {live.yesterday()} or earlier')
@@ -258,7 +313,7 @@ def main():
     if args.city is None:
         city = pick_city(bundle['cities'])
     else:
-        city = {c.lower(): c for c in bundle['cities']}.get(args.city.strip().lower())
+        city = find_city(args.city, bundle)
         if city is None:
             parser.error(f"unknown city {args.city!r}; supported: {', '.join(bundle['cities'])}")
 

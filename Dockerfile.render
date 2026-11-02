@@ -22,7 +22,9 @@ RUN uv sync --frozen --no-dev --no-cache
 
 # 2. The service and the model, in the same folders as in the project, so predict.py finds
 #    the model at ../models/. utility.py is needed to load it: the pickle refers to utility.CategoryXGB.
-COPY scripts/predict.py scripts/utility.py ./scripts/
+#    validate_live.py and the two files from code/ build the input for live forecasts (/predict?live=true).
+COPY scripts/predict.py scripts/utility.py scripts/validate_live.py ./scripts/
+COPY code/cities.py code/download_weather.py ./code/
 COPY models/xgb_final.bin ./models/
 
 EXPOSE 8080

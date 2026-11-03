@@ -564,7 +564,8 @@ class CategoryXGB(BaseEstimator, ClassifierMixin):
     def _codes(y):
         return pd.Categorical(y, categories=AQI_CATEGORIES).codes      # name -> 0..5, unknown -> -1
 
-    def fit(self, X, y, eval_set=None, early_stopping_rounds=None):
+    def fit(self, X, y, eval_set=None, early_stopping_rounds=None, sample_weight=None):
+        """sample_weight: optional weight per training day (e.g. more for recent years), times the class weight."""
         from xgboost import XGBClassifier                               # imported here so utility works without xgboost
 
         codes = self._codes(y)
@@ -578,6 +579,8 @@ class CategoryXGB(BaseEstimator, ClassifierMixin):
             objective="multi:softprob", eval_metric="mlogloss", tree_method="hist",
             early_stopping_rounds=early_stopping_rounds, random_state=self.random_state, n_jobs=-1)
         weights = compute_sample_weight("balanced", codes) if self.balanced else None
+        if sample_weight is not None:
+            weights = np.asarray(sample_weight) * (1 if weights is None else weights)
         evals = None if eval_set is None else [(X_e, self._codes(y_e)) for X_e, y_e in eval_set]
         self.booster_.fit(X, codes, sample_weight=weights, eval_set=evals, verbose=False)
         self.best_n_trees_ = (self.booster_.best_iteration + 1) if early_stopping_rounds else self.n_estimators

@@ -763,3 +763,397 @@ print(summary[['accuracy', 'vs current', 'on change days', 'on steady days']].ro
 5. **The ceiling is the data, not the model** (section 5): with these inputs tomorrow's AQI cannot be known to much better than about 20 points, which caps category accuracy in the low-to-mid 70s.
 
 **Next step:** retrain the final model on **2015-2025 with recent years weighted (half-life 3)**. The expected gain is modest, about +0.5 to +1.5 points, and the change is small: `train.py` gains the weights and one more training year, and nothing changes in the service's inputs. With 2025 in training there is no unseen test year left, so the live checks (the web service's daily `check`) become the test.
+
+## 9. Why Poor, Very Poor and Severe get confused
+
+The model mixes up the three high categories most (2025: 63% of Poor days, 71% of Very Poor and 58% of Severe are caught). Four causes are possible, and each can be tested:
+
+| Possible cause | Type | Test |
+|---|---|---|
+| Too few high-pollution days to learn from | data quantity | does more training data raise their recall? (9.3) |
+| The inputs do not hold what decides tomorrow | data information | do near-identical days end in different categories? (9.1, 9.2) |
+| The model is too simple | model | does a much bigger model do better on new days? (9.4) |
+| The labels are noisy | data quality | are errors higher when few stations measure the AQI? (9.5) |
+
+### 9.1 How much tomorrow moves on polluted days
+
+
+```python
+HIGH = ['Poor', 'Very Poor', 'Severe']
+polluted = df[df['aqi_today'] > 200]
+move = (polluted['tomorrow_aqi'] - polluted['aqi_today']).abs()
+print(f'AQI above 200 today: tomorrow moves by {move.median():.0f} points on a typical day, 50+ on {(move >= 50).mean():.0%} '
+      f'of days and 100+ on {(move >= 100).mean():.0%} (each category is 100 points wide)')
+pd.DataFrame({f'today {lo}-{hi}': df[df['aqi_today'].between(lo, hi)][T.TARGET].astype(str).value_counts(normalize=True)
+              for lo, hi in [(301, 350), (351, 400), (401, 450)]}).reindex(['Moderate'] + HIGH).T.round(2)
+```
+
+    AQI above 200 today: tomorrow moves by 34 points on a typical day, 50+ on 34% of days and 100+ on 9% (each category is 100 points wide)
+
+
+
+
+
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>tomorrow_status</th>
+      <th>Moderate</th>
+      <th>Poor</th>
+      <th>Very Poor</th>
+      <th>Severe</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>today 301-350</th>
+      <td>0.05</td>
+      <td>0.33</td>
+      <td>0.58</td>
+      <td>0.04</td>
+    </tr>
+    <tr>
+      <th>today 351-400</th>
+      <td>0.02</td>
+      <td>0.11</td>
+      <td>0.67</td>
+      <td>0.19</td>
+    </tr>
+    <tr>
+      <th>today 401-450</th>
+      <td>0.01</td>
+      <td>0.06</td>
+      <td>0.43</td>
+      <td>0.51</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+
+
+### 9.2 Do near-identical days end differently?
+
+For every high-category day, find the most similar day of the **same city** in all 26 numeric inputs (standardised), and check whether the two ended in the same category. If look-alike days often end differently, no model can separate them from these inputs.
+
+
+```python
+from sklearn.neighbors import NearestNeighbors
+from sklearn.preprocessing import StandardScaler
+
+numeric = [f for f in T.FEATURES if f != 'city']
+pairs = []
+for city, g in df[df[T.TARGET].astype(str).isin(HIGH)].groupby('city'):
+    if len(g) < 30:
+        continue
+    X = StandardScaler().fit_transform(g[numeric])
+    _, idx = NearestNeighbors(n_neighbors=2).fit(X).kneighbors(X)          # [0] is the day itself
+    label = g[T.TARGET].astype(str).to_numpy()
+    pairs.append(pd.DataFrame({'category': label, 'look-alike': label[idx[:, 1]]}))
+pairs = pd.concat(pairs, ignore_index=True)
+print(f'{len(pairs):,} high days: the look-alike ended differently on {(pairs["category"] != pairs["look-alike"]).mean():.0%}')
+pd.crosstab(pairs['category'], pairs['look-alike'], normalize='index').reindex(index=HIGH, columns=HIGH).round(2)
+```
+
+    13,579 high days: the look-alike ended differently on 32%
+
+
+
+
+
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th>look-alike</th>
+      <th>Poor</th>
+      <th>Very Poor</th>
+      <th>Severe</th>
+    </tr>
+    <tr>
+      <th>category</th>
+      <th></th>
+      <th></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>Poor</th>
+      <td>0.78</td>
+      <td>0.21</td>
+      <td>0.01</td>
+    </tr>
+    <tr>
+      <th>Very Poor</th>
+      <td>0.31</td>
+      <td>0.57</td>
+      <td>0.12</td>
+    </tr>
+    <tr>
+      <th>Severe</th>
+      <td>0.08</td>
+      <td>0.46</td>
+      <td>0.46</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+
+
+### 9.3 More training data: train on a share of 2015-2022, score 2023
+
+
+```python
+from sklearn.metrics import recall_score
+
+def high_recall(model, part):
+    y_true = part[T.TARGET].astype(str).to_numpy()
+    pred = model.predict(part[T.FEATURES].to_dict('records'))
+    return {c: recall_score(y_true, pred, labels=[c], average='macro') for c in HIGH}
+
+def fit_classifier(part, params=T.PARAMS):
+    model = Pipeline([('dv', DictVectorizer(sparse=False)), ('m', CategoryXGB(**params))])
+    return model.fit(part[T.FEATURES].to_dict('records'), part[T.TARGET].astype(str).to_numpy())
+
+train_22, val_23 = df[df['date'].dt.year <= 2022], df[df['date'].dt.year == 2023]
+pd.DataFrame({f'{share:.0%} of the data': high_recall(fit_classifier(train_22.sample(frac=share, random_state=1)), val_23)
+              for share in (0.25, 0.5, 0.75, 1.0)}).T.round(2)
+```
+
+
+
+
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>Poor</th>
+      <th>Very Poor</th>
+      <th>Severe</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>25% of the data</th>
+      <td>0.61</td>
+      <td>0.72</td>
+      <td>0.35</td>
+    </tr>
+    <tr>
+      <th>50% of the data</th>
+      <td>0.63</td>
+      <td>0.76</td>
+      <td>0.35</td>
+    </tr>
+    <tr>
+      <th>75% of the data</th>
+      <td>0.62</td>
+      <td>0.74</td>
+      <td>0.47</td>
+    </tr>
+    <tr>
+      <th>100% of the data</th>
+      <td>0.62</td>
+      <td>0.75</td>
+      <td>0.49</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+
+
+### 9.4 A much bigger model: recall on the training years and on 2023
+
+
+```python
+rows = {}
+for name, params in [('current (depth 3)', T.PARAMS), ('much bigger (depth 8)', {**T.PARAMS, 'max_depth': 8, 'min_child_weight': 1})]:
+    model = fit_classifier(train_22, params)
+    rows[(name, 'training years')] = high_recall(model, train_22)
+    rows[(name, '2023')] = high_recall(model, val_23)
+pd.DataFrame(rows).T.round(2)
+```
+
+
+
+
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th></th>
+      <th>Poor</th>
+      <th>Very Poor</th>
+      <th>Severe</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th rowspan="2" valign="top">current (depth 3)</th>
+      <th>training years</th>
+      <td>0.70</td>
+      <td>0.74</td>
+      <td>0.64</td>
+    </tr>
+    <tr>
+      <th>2023</th>
+      <td>0.62</td>
+      <td>0.75</td>
+      <td>0.47</td>
+    </tr>
+    <tr>
+      <th rowspan="2" valign="top">much bigger (depth 8)</th>
+      <th>training years</th>
+      <td>1.00</td>
+      <td>1.00</td>
+      <td>1.00</td>
+    </tr>
+    <tr>
+      <th>2023</th>
+      <td>0.65</td>
+      <td>0.73</td>
+      <td>0.43</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+
+
+### 9.5 Noisy labels: errors by the number of stations measuring tomorrow's AQI
+
+A city's AQI in the bulletin is averaged over its monitoring stations; with few stations it is a noisier measurement. The final model's errors on the 2025 high-category days, by station count. Caveat: station count is tied to the city (Delhi has the most), so part of the gap is a city effect.
+
+
+```python
+import pickle
+
+with open('../models/xgb_final.bin', 'rb') as f:
+    final = pickle.load(f)['model']
+raw['stations_tomorrow'] = raw.groupby('city')['number_of_monitoring_stations'].shift(-1)
+high_2025 = df[df['date'].dt.year == T.TEST_YEAR].merge(raw[['city', 'date', 'stations_tomorrow']], on=['city', 'date'])
+high_2025['wrong'] = final.predict(high_2025[T.FEATURES].to_dict('records')) != high_2025[T.TARGET].astype(str)
+high_2025 = high_2025[high_2025[T.TARGET].astype(str).isin(HIGH)]
+stations = pd.cut(high_2025['stations_tomorrow'], [0, 3, 8, 15, 100], labels=['1-3', '4-8', '9-15', '16+'])
+high_2025.groupby(stations, observed=True)['wrong'].agg(days='size', error_rate='mean').round(2)
+```
+
+
+
+
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>days</th>
+      <th>error_rate</th>
+    </tr>
+    <tr>
+      <th>stations_tomorrow</th>
+      <th></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>1-3</th>
+      <td>352</td>
+      <td>0.39</td>
+    </tr>
+    <tr>
+      <th>4-8</th>
+      <td>342</td>
+      <td>0.36</td>
+    </tr>
+    <tr>
+      <th>16+</th>
+      <td>165</td>
+      <td>0.25</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+
+
+**Conclusion: a data issue, of information, not of the model or of quantity.**
+
+- **Tomorrow moves too much** on polluted days (about 34 points a day, 50+ on a third of days) for today's inputs to pin down its 100-point band; from AQI 401-450 today, tomorrow is Severe or Very Poor about equally often.
+- **Near-identical days end differently**: the look-alike of a Severe day was Severe only about half the time and Very Poor almost as often. The inputs cannot separate these days, whatever the model.
+- **More data** leaves Poor and Very Poor flat; Severe gains until about 75% of the data, then stops.
+- **A much bigger model** memorises the training days (100%) but is no better on new days: there is no extra signal to learn.
+- **Measurement noise** adds to it: errors are higher where few stations measure the AQI.
+
+What would help is **new information** about what drives a jump: tomorrow's weather forecast (wind, cold-night inversions), crop-fire activity or upwind AQI, festival dates.

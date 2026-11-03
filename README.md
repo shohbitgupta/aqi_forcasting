@@ -130,6 +130,8 @@ Four ideas to raise overall accuracy were tested under the same rules ([`docs/ac
 
 **The limit is the data, not the model:** tomorrow's AQI cannot be forecast to better than about 20 points from these inputs, which caps category accuracy in the low-to-mid 70s. The model is kept as it is, so 2025 stays an untouched test year; recency weighting is planned for the next yearly retrain.
 
+**Why Poor, Very Poor and Severe get confused.** Tested directly: on polluted days tomorrow's AQI moves about 34 points a day (a category is 100 wide), and **days that look identical in every input end in a different category 32% of the time** (a Severe day's look-alike is Severe only 46% of the time). More training data and a much bigger model do not help; fewer monitoring stations mean more errors. So the confusion is a **data issue, missing information**: it needs inputs such as tomorrow's weather forecast, crop-fire activity or festival dates.
+
 ## Running locally
 
 ### Setup

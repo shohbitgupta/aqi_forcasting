@@ -35,6 +35,20 @@ Same rules as every model: chosen with rolling validation on 2019-2023, then sco
 3. **A longer memory adds nothing**, and **even perfect tomorrow's weather adds only about 1 point**.
 4. **The limit is the data, not the model.** With these inputs, tomorrow's AQI cannot be forecast to better than about 20-24 points; a forecast that far off gets the category right on about 70% of days, which is where every candidate lands. Reaching 85% would need tomorrow's AQI to within about 10 points.
 
+## Why Poor, Very Poor and Severe get confused
+
+The model mixes up the three high categories most (2025: 63% of Poor, 71% of Very Poor and 58% of Severe days caught; almost every miss is a neighbouring category). Four possible causes were tested (notebook section 9):
+
+| Test | Result | Meaning |
+|---|---|---|
+| **How much tomorrow moves** on days with AQI above 200 | typically 34 points; 50+ on 34% of days, while a category is 100 points wide. From AQI 401-450 today, tomorrow is Severe 51%, Very Poor 43% | today's AQI cannot pin down tomorrow's band |
+| **Near-identical days** (same city, most similar in all inputs) | end in a different category on 32% of high days; a Severe day's look-alike was Severe only 46% of the time, Very Poor 46% | **the inputs cannot separate these days, whatever the model** |
+| **More training data** (25% to 100% of 2015-2022, scored on 2023) | Poor and Very Poor flat (61-63%, 72-76%); Severe 35% up to half the data, 47-49% from three quarters on | not a shortage of rows |
+| **A much bigger model** (depth 8 instead of 3) | 100% on the training years, no better on 2023 (Very Poor 73% vs 75%, Severe 43% vs 47%) | not the model: it memorises noise |
+| **Few monitoring stations** (2025 high days) | error 39% with 1-3 stations, 25% with 16+ (partly a city effect) | measurement noise adds to it |
+
+**Conclusion: a data issue of missing information**, plus some measurement noise; not the model, and mostly not too few examples. A gain needs new information about what drives a jump on polluted days: tomorrow's weather forecast (wind, cold-night inversions), crop-fire activity or upwind AQI, festival dates.
+
 ## Decision
 
 | | Keep the current model | Retrain now (2015-2025, recent years weighted) |

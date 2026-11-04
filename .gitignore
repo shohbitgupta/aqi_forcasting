@@ -7,3 +7,4 @@ venv/
 .venv
 data/raw/bulletins/
 outputs/validation/
+data/raw/weather_hourly/

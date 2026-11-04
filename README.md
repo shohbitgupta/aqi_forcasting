@@ -119,18 +119,21 @@ The data is committed, so everything runs after cloning; `code/` rebuilds it fro
 
 ## Accuracy experiments
 
-Four ideas to raise overall accuracy were tested under the same rules ([`docs/accuracy_experiments.md`](docs/accuracy_experiments.md)):
+Five ideas to raise overall accuracy were tested under the same rules ([`docs/accuracy_experiments.md`](docs/accuracy_experiments.md)):
 
 | Idea | Effect on accuracy |
 |---|---|
 | Weight recent years more | +0.2 (validation), +0.7 (2025), +0.9 (live) points |
 | Forecast the AQI number, then the category | −0.3 points |
 | AQI 2–3 days ago | +0.1 points |
+| Weather on the bulletin's 4 PM-to-4 PM window instead of the calendar day (5 NCR cities) | −1.5 points: the calendar day's evening hours already act as a short-range forecast |
 | Perfect knowledge of tomorrow's weather (upper bound, not deployable) | +1.1 points |
 
 **The limit is the data, not the model:** tomorrow's AQI cannot be forecast to better than about 20 points from these inputs, which caps category accuracy in the low-to-mid 70s. The model is kept as it is, so 2025 stays an untouched test year; recency weighting is planned for the next yearly retrain.
 
 **Why Poor, Very Poor and Severe get confused.** Tested directly: on polluted days tomorrow's AQI moves about 34 points a day (a category is 100 wide), and **days that look identical in every input end in a different category 32% of the time** (a Severe day's look-alike is Severe only 46% of the time). More training data and a much bigger model do not help; fewer monitoring stations mean more errors. So the confusion is a **data issue, missing information**: it needs inputs such as tomorrow's weather forecast, crop-fire activity or festival dates.
+
+**Conclusion.** The model is at the limit of this data: every model type, setting and feature built from it lands within about a point, and the limit is **information**, not the model or the amount of data. The way forward is new sources (an archive of past weather forecasts, crop-fire counts, festival dates), each expected to add about a point at most overall. The current model stays: 75.1% accuracy on 2025 against 73.3% for persistence, 83% of Very Poor or Severe days caught.
 
 ## Running locally
 
@@ -148,7 +151,7 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 - The model is a pickle, so library versions are pinned to the ones it was trained with.
 - `uv sync --no-dev` installs only what the service and the command line need; the notebooks need the default `uv sync`.
 - For the notebooks: `python -m ipykernel install --user --name aqi-forecasting`, then open them in VS Code or `uv run --with jupyter jupyter lab`.
-- `requirements.txt` is an older, unpinned list kept for reference; use uv.
+- Without uv: `python3.13 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt` installs the same pinned versions for the service and the command line (not the notebooks). The file is generated from uv.lock; after changing dependencies, regenerate it with `uv export --no-dev --no-hashes --no-emit-project --format requirements-txt > requirements.txt`.
 - macOS: if XGBoost fails with `libomp.dylib could not be loaded`, run `brew install libomp`.
 
 ### Reproduce the results
@@ -169,7 +172,8 @@ The notebooks run in this order, since later experiments load the models saved b
 | 6 | `experiments/rf_train.ipynb` | Random forest | ~5 min |
 | 7 | `experiments/xgb_train.ipynb` | XGBoost | ~8–11 min |
 | 8 | `experiments/model_comparison.ipynb` | ROC AUC of every model | ~1.5 min |
-| 9 | `experiments/accuracy_experiments.ipynb` | Accuracy experiments (independent of 4–8) | ~3.5 min |
+| 9 | `experiments/accuracy_experiments.ipynb` | Accuracy experiments (independent of 4–8) | ~7 min |
+| 10 | `experiments/weather_window.ipynb` | Calendar-day vs bulletin-window weather, 5 NCR cities (data in `data/processed/weather_bulletin_window*.csv`, rebuilt by `code/download_weather_window.py`) | ~2 min |
 
 ### Prediction service
 

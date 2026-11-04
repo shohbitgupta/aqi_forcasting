@@ -1,9 +1,9 @@
 # Accuracy experiments: can the final model be right more often?
 
 **Question:** can simple changes raise **overall accuracy** (the share of days the forecast category is the one CPCB reports)?
-**Answer:** only slightly. The current model stays; the small gain is kept for the next yearly retrain.
+**Answer:** only slightly. The model is at the limit of what this data can tell; see the [conclusion](#conclusion).
 
-Notebook: [`experiments/accuracy_experiments.ipynb`](../experiments/accuracy_experiments.ipynb) (exported to [`outputs/accuracy_experiments.md`](../outputs/accuracy_experiments.md)).
+Notebooks: [`experiments/accuracy_experiments.ipynb`](../experiments/accuracy_experiments.ipynb) (exported to [`outputs/accuracy_experiments.md`](../outputs/accuracy_experiments.md)) and [`experiments/weather_window.ipynb`](../experiments/weather_window.ipynb).
 
 ## What was tried
 
@@ -49,6 +49,20 @@ The model mixes up the three high categories most (2025: 63% of Poor, 71% of Ver
 
 **Conclusion: a data issue of missing information**, plus some measurement noise; not the model, and mostly not too few examples. A gain needs new information about what drives a jump on polluted days: tomorrow's weather forecast (wind, cold-night inversions), crop-fire activity or upwind AQI, festival dates.
 
+## Weather on the bulletin's window
+
+The bulletin of day D averages **4 PM on D-1 to 4 PM on D**, but the weather inputs cover the **calendar day** D, so their last 8 hours fall in the window being forecast. The same Open-Meteo hourly data was re-aggregated over each bulletin's window ([`code/download_weather_window.py`](../code/download_weather_window.py)) and compared, on the five NCR cities Delhi, Noida, Greater Noida, Ghaziabad and Gurugram ([`experiments/weather_window.ipynb`](../experiments/weather_window.ipynb)):
+
+| Weather inputs | Validation 2019-2023 | Right on change days |
+|---|---|---|
+| **Calendar day (current)** | **66.0%** | 37.8% |
+| Bulletin window | 64.5% (lower in 5 of 5 years) | 33.9% |
+| Bulletin window + the target window's weather (ceiling, not deployable) | 67.2% | 41.0% |
+
+- **The 8 evening hours carry real information** about the next bulletin: dropping them costs 1.5 points, mostly on change days. They work as a very short-range forecast.
+- **Not a leak in practice:** live, at about 5 PM, those hours come from Open-Meteo's short-range estimates, so the service keeps most of the benefit. **The calendar-day weather stays.**
+- The 2025 test and the live days move by about half a point either way, within noise.
+
 ## Decision
 
 | | Keep the current model | Retrain now (2015-2025, recent years weighted) |
@@ -57,3 +71,28 @@ The model mixes up the three high categories most (2025: 63% of Poor, 71% of Ver
 | Cost | none | 2025 stops being an untouched test year; scores, README and app numbers need updating; redeploy |
 
 **Keep the current model.** The gain is about one more right day in a hundred, while 2025 is the cleanest evidence that the model beats persistence. **Next yearly retrain:** once 2026 is complete, train on 2015-2025 with recent years weighted and test on 2026, which gives the gain and a fresh test year.
+
+## Conclusion
+
+**The model is at the limit of this data; the limit is information, not the model or the amount of data.**
+
+| Evidence | Result |
+|---|---|
+| Four model types, tuned | the best all reach about 71-72% in validation |
+| A much bigger model | memorises the training days, no better on new ones |
+| More training data | flat for Poor and Very Poor |
+| Recency weights, AQI-number target, longer memory, bulletin-window weather | between -1.5 and +0.7 points |
+| Perfect tomorrow's weather (not deployable) | only about +1 point |
+| Near-identical days | end in a different category 32% of the time |
+
+Tomorrow's AQI depends on things the inputs do not contain: tomorrow's weather, crop-fire smoke, festivals, which pollutant will dominate and which stations will report. On polluted days it moves about 34 points a day in a 100-point band, and the bulletin's averaging over stations adds measurement noise. So days that look the same end differently, and no model can separate them.
+
+The current model is a sound result: 75.1% accuracy on the 2025 test (persistence 73.3%), 83% of Very Poor or Severe days caught, and a macro ROC AUC of 0.952.
+
+**The way forward is new information, and the expected gains are modest:**
+
+| New source | Expected effect |
+|---|---|
+| Archive of past weather forecasts (Open-Meteo), for the target window | up to about +1 point overall, more on change days |
+| Crop-fire counts (NASA FIRMS) or upwind AQI | NCR smoke episodes in October-November |
+| Festival dates (Diwali) | a few high-impact days a year |

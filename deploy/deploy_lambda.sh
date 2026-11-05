@@ -4,6 +4,10 @@
 #
 #   ./deploy/deploy_lambda.sh                          # the first deployment, and every update after it
 #   AWS_REGION=eu-west-1 ./deploy/deploy_lambda.sh     # another region (default: ap-south-1, Mumbai)
+#   AWS_REGION=ap-southeast-2 ./deploy/deploy_lambda.sh   # the current deployment (Sydney)
+#
+# Accounts created with "Sign up for AWS (new)" can use Lambda and ECR only in the region chosen at
+# sign-up: anywhere else every call fails with "explicit deny in a service control policy".
 #
 # Needs Docker running and the AWS CLI configured (`aws configure`) with a user allowed to use
 # ECR, Lambda and IAM. Safe to run again: it creates what is missing and updates the rest.
@@ -14,7 +18,7 @@ REGION="${AWS_REGION:-ap-south-1}"
 NAME="aqi-forecast"                    # the ECR repository and the Lambda function
 ROLE_NAME="aqi-forecast-lambda"        # lets the function write its logs, nothing else
 MEMORY_MB=1024
-TIMEOUT_S=30                           # the first request after a quiet spell loads the model: a few seconds
+TIMEOUT_S=120                          # a first live request downloads ~12 CPCB bulletins: about 35 s from Sydney
 MAX_CONCURRENCY=2                      # at most 2 copies at once: a flood of requests slows down, it does not cost more
 
 cd "$(dirname "$0")/.."                # the project root, where the Dockerfile is

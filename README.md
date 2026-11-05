@@ -2,11 +2,12 @@
 
 Forecasts **tomorrow's air-quality category** (Good to Severe, as defined by India's Central Pollution Control Board, CPCB) for 14 cities, from today's AQI, its 7-day trend, the prominent pollutants, the weather and the month. Served as a REST API that can also build its own input from the latest CPCB bulletin.
 
-| | |
-|---|---|
-| **API** | https://aqi-forcasting-2.onrender.com · interactive docs at [`/docs`](https://aqi-forcasting-2.onrender.com/docs) |
-| **Demo app** | https://aqi-forcasting-v1.streamlit.app ([source](https://github.com/shohbitgupta/aqi_forcasting_ui)) |
-| **Context** | DataTalks.Club ML Zoomcamp midterm project · [problem statement](problem_statement.pdf) |
+|                         |                                                                                                                                                                                           |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **API** (AWS Lambda)    | https://f5plwswckchqwxadew2ad5o7lu0ifsrs.lambda-url.ap-southeast-2.on.aws · interactive docs at [`/docs`](https://f5plwswckchqwxadew2ad5o7lu0ifsrs.lambda-url.ap-southeast-2.on.aws/docs) |
+| **Backup API** (Render) | https://aqi-forcasting-2.onrender.com · [`/docs`](https://aqi-forcasting-2.onrender.com/docs) · same image and model                                                                        |
+| **Demo app**            | https://aqi-forcasting-v1.streamlit.app ([source](https://github.com/shohbitgupta/aqi_forcasting_ui))                                                                                     |
+| **Context**             | DataTalks.Club ML Zoomcamp midterm project · [problem statement](problem_statement.pdf)                                                                                                   |
 
 ## Contents
 
@@ -14,13 +15,13 @@ Forecasts **tomorrow's air-quality category** (Good to Severe, as defined by Ind
 
 ## Overview
 
-Air-quality dashboards in India report what the air is like *now*; by the time the AQI reads "Severe", people have already been exposed. A next-day forecast lets people plan outdoor activity, schools decide on closures, hospitals prepare and authorities start pollution controls (Delhi's GRAP) **before** the peak.
+Air-quality dashboards in India report what the air is like _now_; by the time the AQI reads "Severe", people have already been exposed. A next-day forecast lets people plan outdoor activity, schools decide on closures, hospitals prepare and authorities start pollution controls (Delhi's GRAP) **before** the peak.
 
 The task is **multi-class classification**: one of six CPCB categories for the next day.
 
-| AQI | 0–50 | 51–100 | 101–200 | 201–300 | 301–400 | 401–500 |
-|---|---|---|---|---|---|---|
-| **Category** | Good | Satisfactory | Moderate | Poor | Very Poor | Severe |
+| AQI          | 0–50 | 51–100       | 101–200  | 201–300 | 301–400   | 401–500 |
+| ------------ | ---- | ------------ | -------- | ------- | --------- | ------- |
+| **Category** | Good | Satisfactory | Moderate | Poor    | Very Poor | Severe  |
 
 For a city, the service returns the **most likely category**, the **probability of every category**, the chance of a **Severe** day and of a **Dangerous** day (Very Poor or Severe), and an **alert** whose threshold each user can set.
 
@@ -30,12 +31,12 @@ For a city, the service returns the **most likely category**, the **probability 
 
 The classes are **imbalanced**: Severe is 2.4% of days, and Very Poor or Severe ("Dangerous") about 1 in 8 (11.8%); in the 2025 test year they are 0.9% and 6%. A model that never forecast Severe would still look good on accuracy, so the metrics focus on precision and recall:
 
-| Metric | What it measures | Why |
-|---|---|---|
-| **Macro F1** (main metric) | F1 (precision and recall combined) for each category, averaged so the six count equally | Rare categories weigh as much as common ones; used to compare and choose the models |
-| **Dangerous recall** | Share of Very Poor or Severe days that were forecast as such | A missed dangerous day is the costly error |
-| **Dangerous precision** | Share of Very Poor or Severe forecasts that were right | Too many false alarms and people stop trusting the alert |
-| **Dangerous PR AUC** (average precision) | How well P(Dangerous) ranks the risky days, at every alert threshold | The alert threshold can be set by each user; guessing scores the share of dangerous days (0.06), not 0.5 |
+| Metric                                   | What it measures                                                                        | Why                                                                                                      |
+| ---------------------------------------- | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| **Macro F1** (main metric)               | F1 (precision and recall combined) for each category, averaged so the six count equally | Rare categories weigh as much as common ones; used to compare and choose the models                      |
+| **Dangerous recall**                     | Share of Very Poor or Severe days that were forecast as such                            | A missed dangerous day is the costly error                                                               |
+| **Dangerous precision**                  | Share of Very Poor or Severe forecasts that were right                                  | Too many false alarms and people stop trusting the alert                                                 |
+| **Dangerous PR AUC** (average precision) | How well P(Dangerous) ranks the risky days, at every alert threshold                    | The alert threshold can be set by each user; guessing scores the share of dangerous days (0.06), not 0.5 |
 
 Accuracy and ROC AUC are reported for comparison only: both are dominated by the many ordinary days. PR AUC was added for the final test; models were chosen on macro F1 over five validation years, with ROC AUC as the ranking check.
 
@@ -43,15 +44,15 @@ Accuracy and ROC AUC are reported for comparison only: both are dominated by the
 
 Final model: **XGBoost**, trained on 2015–2024 and scored **once** on the held-out year 2025 (4,877 city-days).
 
-| 2025 test | Persistence | **XGBoost** |
-|---|---|---|
-| **Macro F1** (main metric) | 0.659 | **0.671** |
-| Dangerous days caught (recall) | 76.5% | **82.7%** |
-| Dangerous alerts that were right (precision) | 77.9% | 77.6% |
-| Dangerous PR AUC (guessing: 0.06) | 0.610 | **0.892** |
-| Right on days the category changed | 0% | **28.1%** |
-| Accuracy (for comparison) | 73.3% | **75.1%** |
-| Macro ROC AUC (for comparison) | 0.797 | **0.952** |
+| 2025 test                                    | Persistence | **XGBoost** |
+| -------------------------------------------- | ----------- | ----------- |
+| **Macro F1** (main metric)                   | 0.659       | **0.671**   |
+| Dangerous days caught (recall)               | 76.5%       | **82.7%**   |
+| Dangerous alerts that were right (precision) | 77.9%       | 77.6%       |
+| Dangerous PR AUC (guessing: 0.06)            | 0.610       | **0.892**   |
+| Right on days the category changed           | 0%          | **28.1%**   |
+| Accuracy (for comparison)                    | 73.3%       | **75.1%**   |
+| Macro ROC AUC (for comparison)               | 0.797       | **0.952**   |
 
 - It beat persistence in **each of the five validation years** (2019–2023, rolling validation).
 - **Live check**, 31 days in October 2026 built from the CPCB bulletins exactly as the service does: 71.4% accuracy against 69.1% for persistence.
@@ -60,15 +61,11 @@ Final model: **XGBoost**, trained on 2015–2024 and scored **once** on the held
 
 ## Quick start
 
-Try the deployed service (the free server sleeps when idle: the first request can take up to a minute):
+Try the deployed service on AWS Lambda (after a quiet spell, the first request takes a few seconds while the function starts):
 
 ```bash
-# Today's latest data for a city: the service fetches the CPCB bulletins and weather itself
-curl -X POST "https://aqi-forcasting-2.onrender.com/predict?live=true" \
-     -H "Content-Type: application/json" -d '{"city": "Delhi"}'
-
 # Your own input: one city-day's 27 fields (see demo.json)
-curl -X POST https://aqi-forcasting-2.onrender.com/predict \
+curl -X POST https://f5plwswckchqwxadew2ad5o7lu0ifsrs.lambda-url.ap-southeast-2.on.aws/predict \
      -H "Content-Type: application/json" -d @demo.json
 ```
 
@@ -78,12 +75,29 @@ curl -X POST https://aqi-forcasting-2.onrender.com/predict \
   "forecast": "Poor",
   "p_severe": 0.0015,
   "p_dangerous": 0.1081,
-  "probabilities": {"Good": 0.0001, "Satisfactory": 0.0072, "Moderate": 0.1741,
-                    "Poor": 0.7105, "Very Poor": 0.1065, "Severe": 0.0015},
+  "probabilities": {
+    "Good": 0.0001,
+    "Satisfactory": 0.0072,
+    "Moderate": 0.1741,
+    "Poor": 0.7105,
+    "Very Poor": 0.1065,
+    "Severe": 0.0015
+  },
   "alert": false,
   "alert_rule": "forecast is below Very Poor"
 }
 ```
+
+Today's forecast from the latest CPCB data, which the service fetches itself (the first live request after a quiet spell downloads the recent bulletins and takes about 35 seconds; then about 3 seconds):
+
+```bash
+curl -X POST "https://f5plwswckchqwxadew2ad5o7lu0ifsrs.lambda-url.ap-southeast-2.on.aws/predict?live=true" \
+     -H "Content-Type: application/json" -d '{"city": "Delhi"}'
+```
+
+The answer adds `based_on` (the latest bulletin used), `forecast_for`, the 27 fields it built and a `check` of the model's forecast for that latest day against CPCB's actual AQI.
+
+**Backup:** the same Docker image and model also run on Render, at `https://aqi-forcasting-2.onrender.com` (same endpoints; the free server sleeps when idle, so its first request can take up to a minute). On 25 days of the 2025 test year, both deployments gave answers identical to each other and to the local model, and their live forecasts for Delhi matched.
 
 Or open the [demo app](https://aqi-forcasting-v1.streamlit.app): pick a city, see the forecast, today's check against CPCB and a what-if on the weather.
 
@@ -101,7 +115,7 @@ flowchart LR
         E --> F["XGBoost<br/>train 2015–2024, test 2025"]
         F --> G[("models/xgb_final.bin")]
     end
-    subgraph service["3. Service (Docker on Render)"]
+    subgraph service["3. Service (Docker on AWS Lambda; Render as backup)"]
         G --> H["FastAPI predict.py<br/>/predict · /health"]
         I["live_data.py"] -->|"live=true:<br/>builds the 27 fields"| H
     end
@@ -111,31 +125,32 @@ flowchart LR
 
 1. **Data:** `code/` downloads the CPCB bulletins and the weather and merges them into one row per city per day.
 2. **Training:** `train.py` applies the EDA decisions (`prepare_dataset` in `utility.py`), trains XGBoost on 2015–2024, scores 2025 once and saves the model with its feature list.
-3. **Service:** the FastAPI app loads the model once at start-up. A request either sends the 27 fields, or `live=true` with a city, and then `live_data.py` builds the same 27 fields from the latest CPCB bulletins and weather. The app runs in Docker on Render; the [demo app](https://aqi-forcasting-v1.streamlit.app) is a separate client of the same API.
+3. **Service:** the FastAPI app loads the model once at start-up. A request either sends the 27 fields, or `live=true` with a city, and then `live_data.py` builds the same 27 fields from the latest CPCB bulletins and weather. The same Docker image runs on AWS Lambda (main) and on Render (backup); the [demo app](https://aqi-forcasting-v1.streamlit.app) is a separate client that calls the Lambda URL (set by its `AQI_API_URL` secret; without it, the app falls back to Render).
 
 ## Data
 
 One row per city per day, May 2015 to December 2025: **51,072 city-days**, 48,632 after preparation.
 
-| Region | Cities |
-|---|---|
-| Delhi NCR | Delhi, Noida, Greater Noida, Ghaziabad, Gurugram, Faridabad |
-| Indo-Gangetic Plain | Lucknow, Kanpur, Patna |
-| Other metros | Mumbai, Kolkata, Chennai, Bengaluru, Hyderabad |
+| Region              | Cities                                                      |
+| ------------------- | ----------------------------------------------------------- |
+| Delhi NCR           | Delhi, Noida, Greater Noida, Ghaziabad, Gurugram, Faridabad |
+| Indo-Gangetic Plain | Lucknow, Kanpur, Patna                                      |
+| Other metros        | Mumbai, Kolkata, Chennai, Bengaluru, Hyderabad              |
 
 Each row holds the day's AQI and category, the prominent pollutants and the daily weather (temperature, humidity, dew point, rain, pressure, cloud cover, wind speed and direction).
 
-| Data | Source |
-|---|---|
-| Daily AQI bulletins, 2015–2025 (training) | CPCB, compiled by Urban Emissions: [urbanemissionsinfo/AQI_bulletins](https://github.com/urbanemissionsinfo/AQI_bulletins) |
-| Daily weather, from hourly values | [Open-Meteo](https://open-meteo.com/) Historical Weather API |
-| Recent daily bulletins (live forecasts only) | [CPCB](https://cpcb.gov.in/) bulletin PDFs, downloaded on demand, not stored in git |
+| Data                                         | Source                                                                                                                     |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Daily AQI bulletins, 2015–2025 (training)    | CPCB, compiled by Urban Emissions: [urbanemissionsinfo/AQI_bulletins](https://github.com/urbanemissionsinfo/AQI_bulletins) |
+| Daily weather, from hourly values            | [Open-Meteo](https://open-meteo.com/) Historical Weather API                                                               |
+| Recent daily bulletins (live forecasts only) | [CPCB](https://cpcb.gov.in/) bulletin PDFs, downloaded on demand, not stored in git                                        |
 
 The data is committed, so everything runs after cloning; `code/` rebuilds it from the sources (see [Rebuilding the data](#rebuilding-the-data)).
 
 ## Approach
 
 **Exploratory data analysis** ([`notebooks/eda.ipynb`](notebooks/eda.ipynb), decisions in [`docs/EDA_Decision_Document.pdf`](docs/EDA_Decision_Document.pdf)):
+
 - The target is built from the **AQI number**, not the text label (56 labels disagree with their own value).
 - Gaps of up to 3 days are filled with the last known value; longer gaps are dropped; the target is never filled.
 - Classes are imbalanced (Severe is 2.4% of days), so models are compared on **macro F1** and on **Very Poor and Severe recall and precision**, not accuracy ([Evaluation metrics](#evaluation-metrics)).
@@ -148,13 +163,13 @@ The data is committed, so everything runs after cloning; `code/` rebuilds it fro
 
 **Models:**
 
-| Model | Chosen settings | Macro F1, 2019–2023 | Years ahead of persistence | Macro ROC AUC |
-|---|---|---|---|---|
-| Persistence | – | 0.634 | – | – |
-| Logistic regression | `C` = 1 | 0.613 | 1 of 5 | 0.935 |
-| Decision tree | depth 10, leaf 100 | 0.631 | 3 of 5 | 0.930 |
-| Random forest | 200 trees, `max_features` 0.5, leaf 5, balanced | **0.664** | 5 of 5 | 0.940 |
-| **XGBoost** | depth 3, `min_child_weight` 10, 628 rounds | 0.655 | **5 of 5** | **0.942** |
+| Model               | Chosen settings                                 | Macro F1, 2019–2023 | Years ahead of persistence | Macro ROC AUC |
+| ------------------- | ----------------------------------------------- | ------------------- | -------------------------- | ------------- |
+| Persistence         | –                                               | 0.634               | –                          | –             |
+| Logistic regression | `C` = 1                                         | 0.613               | 1 of 5                     | 0.935         |
+| Decision tree       | depth 10, leaf 100                              | 0.631               | 3 of 5                     | 0.930         |
+| Random forest       | 200 trees, `max_features` 0.5, leaf 5, balanced | **0.664**           | 5 of 5                     | 0.940         |
+| **XGBoost**         | depth 3, `min_child_weight` 10, 628 rounds      | 0.655               | **5 of 5**                 | **0.942**     |
 
 **XGBoost was chosen:** it beats persistence in every year, ranks risky days best, and its file is 27 times smaller than the random forest's (4 MB vs 114 MB). Details: [`docs/model_comparison.md`](docs/model_comparison.md) and [`docs/model_decisions.md`](docs/model_decisions.md).
 
@@ -162,13 +177,13 @@ The data is committed, so everything runs after cloning; `code/` rebuilds it fro
 
 Five ideas to raise overall accuracy were tested under the same rules ([`docs/accuracy_experiments.md`](docs/accuracy_experiments.md)):
 
-| Idea | Effect on accuracy |
-|---|---|
-| Weight recent years more | +0.2 (validation), +0.7 (2025), +0.9 (live) points |
-| Forecast the AQI number, then the category | −0.3 points |
-| AQI 2–3 days ago | +0.1 points |
+| Idea                                                                                     | Effect on accuracy                                                                  |
+| ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Weight recent years more                                                                 | +0.2 (validation), +0.7 (2025), +0.9 (live) points                                  |
+| Forecast the AQI number, then the category                                               | −0.3 points                                                                         |
+| AQI 2–3 days ago                                                                         | +0.1 points                                                                         |
 | Weather on the bulletin's 4 PM-to-4 PM window instead of the calendar day (5 NCR cities) | −1.5 points: the calendar day's evening hours already act as a short-range forecast |
-| Perfect knowledge of tomorrow's weather (upper bound, not deployable) | +1.1 points |
+| Perfect knowledge of tomorrow's weather (upper bound, not deployable)                    | +1.1 points                                                                         |
 
 **The limit is the data, not the model:** tomorrow's AQI cannot be forecast to better than about 20 points from these inputs, which caps category accuracy in the low-to-mid 70s. The model is kept as it is, so 2025 stays an untouched test year; recency weighting is planned for the next yearly retrain.
 
@@ -225,18 +240,18 @@ python scripts/train.py          # trains on 2015-2024, scores 2025 once, saves 
 
 The notebooks run in this order, since later experiments load the models saved by earlier ones in `experiments/models/`. Executed copies with every output are in [`outputs/`](outputs/).
 
-| # | Notebook | Purpose | Run time |
-|---|---|---|---|
-| 1 | `notebooks/eda.ipynb` | Exploratory analysis and data decisions | seconds |
-| 2 | `notebooks/aqi_prediction.ipynb` | Feature engineering, collinearity check | seconds |
-| 3 | `experiments/baseline_forecast.ipynb` | Persistence and simple baselines | seconds |
-| 4 | `experiments/lr_train_baseline.ipynb` | Logistic regression | ~20 s |
-| 5 | `experiments/dt_train.ipynb` | Decision tree | ~1.5 min |
-| 6 | `experiments/rf_train.ipynb` | Random forest | ~5 min |
-| 7 | `experiments/xgb_train.ipynb` | XGBoost | ~8–11 min |
-| 8 | `experiments/model_comparison.ipynb` | ROC AUC of every model | ~1.5 min |
-| 9 | `experiments/accuracy_experiments.ipynb` | Accuracy experiments (independent of 4–8) | ~7 min |
-| 10 | `experiments/weather_window.ipynb` | Calendar-day vs bulletin-window weather, 5 NCR cities (data in `data/processed/weather_bulletin_window*.csv`, rebuilt by `code/download_weather_window.py`) | ~2 min |
+| #   | Notebook                                 | Purpose                                                                                                                                                     | Run time  |
+| --- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| 1   | `notebooks/eda.ipynb`                    | Exploratory analysis and data decisions                                                                                                                     | seconds   |
+| 2   | `notebooks/aqi_prediction.ipynb`         | Feature engineering, collinearity check                                                                                                                     | seconds   |
+| 3   | `experiments/baseline_forecast.ipynb`    | Persistence and simple baselines                                                                                                                            | seconds   |
+| 4   | `experiments/lr_train_baseline.ipynb`    | Logistic regression                                                                                                                                         | ~20 s     |
+| 5   | `experiments/dt_train.ipynb`             | Decision tree                                                                                                                                               | ~1.5 min  |
+| 6   | `experiments/rf_train.ipynb`             | Random forest                                                                                                                                               | ~5 min    |
+| 7   | `experiments/xgb_train.ipynb`            | XGBoost                                                                                                                                                     | ~8–11 min |
+| 8   | `experiments/model_comparison.ipynb`     | ROC AUC of every model                                                                                                                                      | ~1.5 min  |
+| 9   | `experiments/accuracy_experiments.ipynb` | Accuracy experiments (independent of 4–8)                                                                                                                   | ~7 min    |
+| 10  | `experiments/weather_window.ipynb`       | Calendar-day vs bulletin-window weather, 5 NCR cities (data in `data/processed/weather_bulletin_window*.csv`, rebuilt by `code/download_weather_window.py`) | ~2 min    |
 
 ### Prediction service
 
@@ -253,11 +268,11 @@ curl -X POST "http://localhost:8080/predict?live=true" -H "Content-Type: applica
 
 The first returns the same answer as in [Quick start](#quick-start) (Noida, Poor, P(Dangerous) 0.1081).
 
-| Endpoint | Body | Returns |
-|---|---|---|
-| `GET /health` | – | status and the 14 supported cities |
-| `POST /predict` | one city-day's 27 fields ([`demo.json`](demo.json)) | category, probabilities, P(Severe), P(Dangerous), alert |
-| `POST /predict?live=true` | `{"city": "Delhi"}` | the same, built from the latest CPCB data, plus `based_on`, `forecast_for`, the `input` it built and a `check` of the latest day |
+| Endpoint                  | Body                                                | Returns                                                                                                                          |
+| ------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /health`             | –                                                   | status and the 14 supported cities                                                                                               |
+| `POST /predict`           | one city-day's 27 fields ([`demo.json`](demo.json)) | category, probabilities, P(Severe), P(Dangerous), alert                                                                          |
+| `POST /predict?live=true` | `{"city": "Delhi"}`                                 | the same, built from the latest CPCB data, plus `based_on`, `forecast_for`, the `input` it built and a `check` of the latest day |
 
 - **Alert:** raised by default when the forecast is Very Poor or Severe. `?dangerous_threshold=0.25` raises it when P(Very Poor or Severe) ≥ 25%; `severe_threshold` does the same for P(Severe).
 - **Errors:** invalid input returns 422 with the reason; in live mode, 502 if CPCB cannot be reached and 503 if its bulletins miss too many days.
@@ -291,11 +306,31 @@ The image holds only the service, the model and the pinned libraries. `Dockerfil
 
 ## Deployment
 
-The API runs on [Render](https://render.com)'s free plan from `Dockerfile.render`. To deploy a copy: **New → Web Service**, connect the repository, choose **Docker** and the **Free** instance, and under **Advanced** set **Dockerfile Path** to `./Dockerfile.render` and **Health Check Path** to `/health`. Every push to `main` redeploys.
+### AWS Lambda (main)
+
+The API runs on AWS Lambda in Sydney (`ap-southeast-2`) at https://f5plwswckchqwxadew2ad5o7lu0ifsrs.lambda-url.ap-southeast-2.on.aws. It is deployed from `Dockerfile` by [`deploy/deploy_lambda.sh`](deploy/deploy_lambda.sh), which also redeploys after every change:
+
+```bash
+AWS_REGION=ap-southeast-2 ./deploy/deploy_lambda.sh      # add AWS_PROFILE=<name> for a non-default profile
+```
+
+The script needs Docker running and the AWS CLI signed in with permission to use ECR, Lambda and IAM. In five steps it:
+
+1. creates an ECR repository that keeps the 3 newest images;
+2. builds the image for arm64 (Graviton) and pushes it;
+3. creates an IAM role that only lets the function write logs;
+4. creates or updates the function: 1 GB of memory, a 120-second timeout (room for a first live request), at most 2 copies at once;
+5. adds a public Function URL and checks `/health`.
+
+- **The image is the one used locally:** the AWS Lambda Web Adapter in `Dockerfile` passes each request to the FastAPI app unchanged, and the CPCB bulletins are written to `/tmp`, the only writable folder on Lambda.
+- **Speed and cost:** after a quiet spell the function takes about 4 seconds to start; then a `/predict` answer takes under a second. A live forecast takes about 35 seconds when the bulletins must be downloaded (the first live request after a start) and about 3 seconds after that. Lambda's always-free allowance covers this use, and storing the image in ECR costs a few cents a month at most.
+- **Region:** accounts created with "Sign up for AWS (new)" can run Lambda and ECR only in the region chosen at sign-up; elsewhere every call fails with "explicit deny in a service control policy". Set `AWS_REGION` to that region; the script's default is `ap-south-1` (Mumbai).
+
+### Render (backup)
+
+The same service runs on [Render](https://render.com)'s free plan from `Dockerfile.render`, which listens on the port Render assigns. It serves the same API, live forecasts included, if Lambda is unavailable. To deploy a copy: **New → Web Service**, connect the repository, choose **Docker** and the **Free** instance, and under **Advanced** set **Dockerfile Path** to `./Dockerfile.render` and **Health Check Path** to `/health`. Every push to `main` redeploys.
 
 The free plan sleeps after 15 minutes without requests; the first request after that takes up to a minute.
-
-Alternative: [`deploy/deploy_lambda.sh`](deploy/deploy_lambda.sh) deploys the same image to AWS Lambda with a public URL in one command (needs the AWS CLI and an account that allows ECR and Lambda).
 
 ## How live forecasts work
 
@@ -324,7 +359,7 @@ aqi_forcasting/
 ├── models/xgb_final.bin   # the final model
 ├── outputs/               # executed notebooks as Markdown
 ├── docs/                  # EDA decisions, model comparison and decisions, experiments
-├── deploy/                # AWS Lambda deployment script (optional)
+├── deploy/                # AWS Lambda deployment script (the main deployment)
 ├── Dockerfile, Dockerfile.render
 ├── pyproject.toml, uv.lock
 └── demo.json              # example request
@@ -345,6 +380,7 @@ python code/merge_data.py         # -> data/processed/aqi_weather_2015_2025.csv
 - **Middle-range probabilities overstate the risk:** on 2025, days with P(Dangerous) between 0.4 and 0.6 were dangerous only 28% of the time (78 days). Below 0.05 and above 0.8, where 90% of days fall, the probabilities match what happened. The model learned from dirtier years (Severe 2.6% of days in 2015–2024, 0.9% in 2025), so when choosing `dangerous_threshold`, go by the measured catch rate and precision in [Results](#results), not by the raw probability.
 - **Accuracy is bounded by the inputs** (see [Accuracy experiments](#accuracy-experiments)); a large gain would need new information, not a different model.
 - **Live forecasts depend on CPCB and Open-Meteo** being reachable; connections from servers outside India to CPCB are sometimes slow.
+- **The first live forecast after a quiet spell is slow:** about 35 seconds on Lambda, because it downloads about 12 CPCB bulletins from Sydney, and Lambda discards the downloaded copies when it stops an idle function. Later live requests take about 3 seconds. A daily job that prepares the inputs ahead of requests (see [Next steps](#next-steps)) would remove the wait.
 - **Today's evening weather is an estimate** when the forecast is based on today; training used fully measured days.
 
 ## Next steps

@@ -10,7 +10,7 @@ Forecasts **tomorrow's air-quality category** (Good to Severe, as defined by Ind
 
 ## Contents
 
-[Overview](#overview) · [Results](#results) · [Quick start](#quick-start) · [Data](#data) · [Approach](#approach) · [Accuracy experiments](#accuracy-experiments) · [Running locally](#running-locally) · [Deployment](#deployment) · [Live forecasts](#how-live-forecasts-work) · [Project structure](#project-structure) · [Limitations](#limitations) · [Licences](#data-licences)
+[Overview](#overview) · [Results](#results) · [Quick start](#quick-start) · [Architecture](#architecture) · [Data](#data) · [Approach](#approach) · [Accuracy experiments](#accuracy-experiments) · [Running locally](#running-locally) · [Deployment](#deployment) · [Live forecasts](#how-live-forecasts-work) · [Project structure](#project-structure) · [Limitations](#limitations) · [Next steps](#next-steps) · [Licences](#data-licences)
 
 ## Overview
 
@@ -87,6 +87,32 @@ curl -X POST https://aqi-forcasting-2.onrender.com/predict \
 
 Or open the [demo app](https://aqi-forcasting-v1.streamlit.app): pick a city, see the forecast, today's check against CPCB and a what-if on the weather.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph pipeline["1. Data pipeline (code/)"]
+        A["CPCB AQI bulletins<br/>2015–2025"] --> C["prepare_aqi.py<br/>download_weather.py<br/>merge_data.py"]
+        B["Open-Meteo<br/>weather archive"] --> C
+        C --> D[("aqi_weather_2015_2025.csv<br/>51,072 city-days")]
+    end
+    subgraph training["2. Training (scripts/train.py)"]
+        D --> E["prepare_dataset<br/>features + target"]
+        E --> F["XGBoost<br/>train 2015–2024, test 2025"]
+        F --> G[("models/xgb_final.bin")]
+    end
+    subgraph service["3. Service (Docker on Render)"]
+        G --> H["FastAPI predict.py<br/>/predict · /health"]
+        I["live_data.py"] -->|"live=true:<br/>builds the 27 fields"| H
+    end
+    J["Latest CPCB bulletin PDFs<br/>+ Open-Meteo"] --> I
+    H --> K["curl, /docs page,<br/>Streamlit demo app"]
+```
+
+1. **Data:** `code/` downloads the CPCB bulletins and the weather and merges them into one row per city per day.
+2. **Training:** `train.py` applies the EDA decisions (`prepare_dataset` in `utility.py`), trains XGBoost on 2015–2024, scores 2025 once and saves the model with its feature list.
+3. **Service:** the FastAPI app loads the model once at start-up. A request either sends the 27 fields, or `live=true` with a city, and then `live_data.py` builds the same 27 fields from the latest CPCB bulletins and weather. The app runs in Docker on Render; the [demo app](https://aqi-forcasting-v1.streamlit.app) is a separate client of the same API.
+
 ## Data
 
 One row per city per day, May 2015 to December 2025: **51,072 city-days**, 48,632 after preparation.
@@ -148,7 +174,7 @@ Five ideas to raise overall accuracy were tested under the same rules ([`docs/ac
 
 **Why Poor, Very Poor and Severe get confused.** Tested directly: on polluted days tomorrow's AQI moves about 34 points a day (a category is 100 wide), and **days that look identical in every input end in a different category 32% of the time** (a Severe day's look-alike is Severe only 46% of the time). More training data and a much bigger model do not help; fewer monitoring stations mean more errors. So the confusion is a **data issue, missing information**: it needs inputs such as tomorrow's weather forecast, crop-fire activity or festival dates.
 
-**Conclusion.** The model is at the limit of this data: every model type, setting and feature built from it lands within about a point, and the limit is **information**, not the model or the amount of data. The way forward is new sources (an archive of past weather forecasts, crop-fire counts, festival dates), each expected to add about a point at most overall. The current model stays: 75.1% accuracy on 2025 against 73.3% for persistence, 83% of Very Poor or Severe days caught.
+**Conclusion.** The model is at the limit of this data: every model type, setting and feature built from it lands within about a point, and the limit is **information**, not the model or the amount of data. The way forward is new sources (an archive of past weather forecasts, crop-fire counts, festival dates), each expected to add about a point at most overall. The current model stays: on 2025 it beats persistence on macro F1 (0.671 against 0.659), catches 82.7% of Very Poor or Severe days (against 76.5%) and is right on 75.1% of days (against 73.3%).
 
 ## Running locally
 
@@ -196,6 +222,15 @@ The notebooks run in this order, since later experiments load the models saved b
 uvicorn predict:app --app-dir scripts --port 8080     # then open http://localhost:8080/docs
 ```
 
+In a second terminal:
+
+```bash
+curl -X POST http://localhost:8080/predict -H "Content-Type: application/json" -d @demo.json
+curl -X POST "http://localhost:8080/predict?live=true" -H "Content-Type: application/json" -d '{"city": "Delhi"}'
+```
+
+The first returns the same answer as in [Quick start](#quick-start) (Noida, Poor, P(Dangerous) 0.1081).
+
 | Endpoint | Body | Returns |
 |---|---|---|
 | `GET /health` | – | status and the 14 supported cities |
@@ -224,6 +259,10 @@ Forecast for 2026-11-03: Poor
 ```bash
 docker build -t aqi-forecast .
 docker run -p 8080:8080 aqi-forecast
+
+# in a second terminal
+curl http://localhost:8080/health
+curl -X POST http://localhost:8080/predict -H "Content-Type: application/json" -d @demo.json
 ```
 
 The image holds only the service, the model and the pinned libraries. `Dockerfile` also works on AWS Lambda; `Dockerfile.render` is the same image for Render, listening on the port Render assigns.
@@ -285,6 +324,14 @@ python code/merge_data.py         # -> data/processed/aqi_weather_2015_2025.csv
 - **Accuracy is bounded by the inputs** (see [Accuracy experiments](#accuracy-experiments)); a large gain would need new information, not a different model.
 - **Live forecasts depend on CPCB and Open-Meteo** being reachable; connections from servers outside India to CPCB are sometimes slow.
 - **Today's evening weather is an estimate** when the forecast is based on today; training used fully measured days.
+
+## Next steps
+
+1. **Weight recent years more at the next yearly retrain.** It helped every time it was tested (+0.7 points on 2025, +0.9 live) and targets the drift towards cleaner years that makes middle-range probabilities too high. It was left out of this model so 2025 stays an untouched test year.
+2. **Add information the model does not have.** Days that look identical in every input end in a different category 32% of the time, so the gains must come from new inputs: an archive of past weather forecasts, crop-fire counts (October–November) and festival dates. Each is expected to add about a point at most overall.
+3. **Prepare inputs ahead of requests.** A daily job at about 4:30 PM IST, after CPCB publishes, would fetch the new bulletin and weather for every city, so requests stay fast and do not depend on CPCB being online at that moment.
+4. **Track the model in production.** Check every forecast against the next day's bulletin and watch macro F1, Dangerous recall and precision by month, so a drop is seen before the yearly retrain.
+5. **Add automated tests.** A few `pytest` checks on the service (`/health`, the `demo.json` answer, a 422 for an unknown city) run on every push.
 
 ## Data licences
 

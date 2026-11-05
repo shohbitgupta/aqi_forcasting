@@ -6,6 +6,11 @@
 The settings below were chosen in xgb_train.ipynb with rolling validation on 2019-2023
 (see docs/model_comparison.md, section 4.4). They are fixed here: nothing in this script
 is chosen by looking at the test year, so the test stays an honest check.
+
+Metrics (the classes are imbalanced: Severe is 2.4% of days): macro F1 is the main score,
+then Dangerous (Very Poor or Severe) recall and precision; PR AUC and ROC AUC judge how well
+the probabilities rank risky days; log loss, the quantity the model is trained to minimise,
+judges the probabilities themselves; accuracy is shown for comparison only.
 """
 import argparse
 import pickle
@@ -17,7 +22,8 @@ from sklearn.metrics import confusion_matrix, f1_score
 from sklearn.pipeline import Pipeline
 
 from utility import (AQI_CATEGORIES, prepare_dataset, CategoryXGB, forecast_scorecard,
-                     class_scores_table, proba_table, persistence_proba, auc_scores)
+                     class_scores_table, proba_table, persistence_proba, auc_scores,
+                     pr_auc_scores, class_share, log_loss_score)
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent     # works from any folder, not only scripts/
 DATA_PATH = PROJECT_DIR / 'data' / 'processed' / 'aqi_weather_2015_2025.csv'
@@ -97,10 +103,15 @@ def evaluate(model, test):
     today = test['status_today'].astype(str).to_numpy()
 
     predictions = {'persistence': today, 'xgboost': model.predict(X_test)}
-    auc = pd.DataFrame({
-        'persistence': auc_scores(y_test, persistence_proba(test['status_today'])),
-        'xgboost': auc_scores(y_test, proba_table(model, X_test)),
-    }).T
+    probas = {'persistence': persistence_proba(test['status_today']), 'xgboost': proba_table(model, X_test)}
+    auc = pd.DataFrame({name: auc_scores(y_test, p) for name, p in probas.items()}).T
+    pr_auc = pd.DataFrame({'guessing (share of days)': class_share(y_test),
+                           **{name: pr_auc_scores(y_test, p) for name, p in probas.items()}}).T
+    shares = class_share(y_test)[AQI_CATEGORIES]
+    guessing = pd.DataFrame([shares.to_numpy()] * len(y_test), columns=AQI_CATEGORIES)
+    # persistence is left out: it gives 0 to every other category, so each miss costs infinity
+    log_loss = {'guessing (share of days)': log_loss_score(y_test, guessing),
+                'xgboost': log_loss_score(y_test, probas['xgboost'])}
     return {
         'scorecard': forecast_scorecard(y_test, predictions, y_today=test['status_today']),
         'class_scores': class_scores_table(y_test, predictions).round(2),
@@ -108,6 +119,8 @@ def evaluate(model, test):
                                   index=pd.Index(AQI_CATEGORIES, name='actual'),
                                   columns=pd.Index(AQI_CATEGORIES, name='predicted')),
         'auc': auc.round(3),
+        'pr_auc': pr_auc.round(3),
+        'log_loss': {name: round(v, 3) for name, v in log_loss.items()},
     }
 
 
@@ -122,6 +135,8 @@ def save(model, results, full_train, path):
         'test_year': TEST_YEAR,
         'test_scores': results['scorecard']['xgboost'].to_dict(),
         'test_auc': results['auc'].loc['xgboost'].to_dict(),
+        'test_pr_auc': results['pr_auc'].loc['xgboost'].to_dict(),
+        'test_log_loss': results['log_loss']['xgboost'],
         'validation_reference': VALIDATION_REFERENCE,
     }
     path = Path(path)
@@ -161,8 +176,13 @@ def main():
     print(results['class_scores'].to_string())
     print('\nConfusion matrix (XGBoost):')
     print(results['confusion'].to_string())
+    print('\nPR AUC (average precision; guessing scores the share of days):')
+    print(results['pr_auc'].to_string())
     print('\nROC AUC:')
     print(results['auc'].to_string())
+    print('\nLog loss (what training minimises; lower is better; persistence: infinite):')
+    for name, value in results['log_loss'].items():
+        print(f'  {name:26} {value:.3f}')
     ref = VALIDATION_REFERENCE
     print(f"\nFor comparison, rolling validation 2019-2023: macro F1 {ref['macro_f1']:.3f} "
           f"(persistence {ref['persistence_macro_f1']:.3f}), macro AUC {ref['macro_auc']:.3f}")

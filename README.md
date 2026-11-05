@@ -24,7 +24,20 @@ The task is **multi-class classification**: one of six CPCB categories for the n
 
 For a city, the service returns the **most likely category**, the **probability of every category**, the chance of a **Severe** day and of a **Dangerous** day (Very Poor or Severe), and an **alert** whose threshold each user can set.
 
-**Success criterion:** beat persistence, the forecast "tomorrow = today", which is right on about 70% of days.
+**Success criterion:** beat persistence, the forecast "tomorrow = today", on the metrics below. Persistence is right on about 70% of days, because the air usually stays in the same category, so it is a hard baseline to beat.
+
+### Evaluation metrics
+
+The classes are **imbalanced**: Severe is 2.4% of days, and Very Poor or Severe ("Dangerous") about 1 in 8 (11.8%); in the 2025 test year they are 0.9% and 6%. A model that never forecast Severe would still look good on accuracy, so the metrics focus on precision and recall:
+
+| Metric | What it measures | Why |
+|---|---|---|
+| **Macro F1** (main metric) | F1 (precision and recall combined) for each category, averaged so the six count equally | Rare categories weigh as much as common ones; used to compare and choose the models |
+| **Dangerous recall** | Share of Very Poor or Severe days that were forecast as such | A missed dangerous day is the costly error |
+| **Dangerous precision** | Share of Very Poor or Severe forecasts that were right | Too many false alarms and people stop trusting the alert |
+| **Dangerous PR AUC** (average precision) | How well P(Dangerous) ranks the risky days, at every alert threshold | The alert threshold can be set by each user; guessing scores the share of dangerous days (0.06), not 0.5 |
+
+Accuracy and ROC AUC are reported for comparison only: both are dominated by the many ordinary days. PR AUC was added for the final test; models were chosen on macro F1 over five validation years, with ROC AUC as the ranking check.
 
 ## Results
 
@@ -32,16 +45,18 @@ Final model: **XGBoost**, trained on 2015–2024 and scored **once** on the held
 
 | 2025 test | Persistence | **XGBoost** |
 |---|---|---|
-| Accuracy | 73.3% | **75.1%** |
-| Macro F1 | 0.659 | **0.671** |
+| **Macro F1** (main metric) | 0.659 | **0.671** |
 | Dangerous days caught (recall) | 76.5% | **82.7%** |
 | Dangerous alerts that were right (precision) | 77.9% | 77.6% |
+| Dangerous PR AUC (guessing: 0.06) | 0.610 | **0.892** |
 | Right on days the category changed | 0% | **28.1%** |
-| Macro ROC AUC | 0.797 | **0.952** |
+| Accuracy (for comparison) | 73.3% | **75.1%** |
+| Macro ROC AUC (for comparison) | 0.797 | **0.952** |
 
 - It beat persistence in **each of the five validation years** (2019–2023, rolling validation).
 - **Live check**, 31 days in October 2026 built from the CPCB bulletins exactly as the service does: 71.4% accuracy against 69.1% for persistence.
-- **Strength:** it ranks risky days very well (Dangerous AUC 0.989). **Weakness:** it catches only about 3 in 10 category changes; see [Limitations](#limitations).
+- **Strength:** it ranks risky days well (Dangerous PR AUC 0.892 against 0.610 for persistence), so a user can lower the alert threshold to catch more dangerous days and the alerts stay mostly right: with `dangerous_threshold=0.3`, 90% of dangerous days are caught and 67% of alerts are right (82.7% and 77.6% at the default). **Weaknesses:** it catches only about 3 in 10 category changes, and Severe on its own is hard (precision 0.54, recall 0.58); see [Limitations](#limitations).
+- `python scripts/train.py` prints all of these, plus precision, recall and F1 for each category, the confusion matrix and the log loss, the quantity the model is trained to minimise (0.579 on 2025; 1.357 for guessing each category's share of days).
 
 ## Quick start
 
@@ -97,7 +112,7 @@ The data is committed, so everything runs after cloning; `code/` rebuilds it fro
 **Exploratory data analysis** ([`notebooks/eda.ipynb`](notebooks/eda.ipynb), decisions in [`docs/EDA_Decision_Document.pdf`](docs/EDA_Decision_Document.pdf)):
 - The target is built from the **AQI number**, not the text label (56 labels disagree with their own value).
 - Gaps of up to 3 days are filled with the last known value; longer gaps are dropped; the target is never filled.
-- Classes are imbalanced (Severe is 2.4% of days), so models are compared on **macro F1** and on **Very Poor and Severe recall**, not accuracy alone.
+- Classes are imbalanced (Severe is 2.4% of days), so models are compared on **macro F1** and on **Very Poor and Severe recall and precision**, not accuracy ([Evaluation metrics](#evaluation-metrics)).
 - Today's AQI is by far the strongest signal (Spearman ρ 0.88); seasonality is strong (10.4% of November days are Severe).
 - Outliers are real pollution episodes and are kept.
 
@@ -107,7 +122,7 @@ The data is committed, so everything runs after cloning; `code/` rebuilds it fro
 
 **Models:**
 
-| Model | Chosen settings | Macro F1, 2019–2023 | Years ahead of persistence | Macro AUC |
+| Model | Chosen settings | Macro F1, 2019–2023 | Years ahead of persistence | Macro ROC AUC |
 |---|---|---|---|---|
 | Persistence | – | 0.634 | – | – |
 | Logistic regression | `C` = 1 | 0.613 | 1 of 5 | 0.935 |
@@ -264,7 +279,9 @@ python code/merge_data.py         # -> data/processed/aqi_weather_2015_2025.csv
 
 ## Limitations
 
-- **Category changes are hard:** about 3 in 10 are caught. On steady days the model is right about 9 times in 10, so its overall edge over persistence is modest (about 2 points).
+- **Category changes are hard:** about 3 in 10 are caught. On steady days the model is right about 9 times in 10, so its overall edge over persistence is modest (+0.012 macro F1, +1.8 accuracy points on 2025).
+- **Severe alone is hard to pin down:** about half of Severe forecasts are right (precision 0.54) and 26 of 45 Severe days are caught; the other 19 are all forecast Very Poor, which still raises the Dangerous alert.
+- **Middle-range probabilities overstate the risk:** on 2025, days with P(Dangerous) between 0.4 and 0.6 were dangerous only 28% of the time (78 days). Below 0.05 and above 0.8, where 90% of days fall, the probabilities match what happened. The model learned from dirtier years (Severe 2.6% of days in 2015–2024, 0.9% in 2025), so when choosing `dangerous_threshold`, go by the measured catch rate and precision in [Results](#results), not by the raw probability.
 - **Accuracy is bounded by the inputs** (see [Accuracy experiments](#accuracy-experiments)); a large gain would need new information, not a different model.
 - **Live forecasts depend on CPCB and Open-Meteo** being reachable; connections from servers outside India to CPCB are sometimes slow.
 - **Today's evening weather is an estimate** when the forecast is based on today; training used fully measured days.

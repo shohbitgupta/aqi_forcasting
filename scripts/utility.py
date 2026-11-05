@@ -2,7 +2,7 @@
 import numpy as np
 import pandas as pd
 from sklearn.metrics import (accuracy_score, f1_score, precision_score,
-                             recall_score, confusion_matrix, roc_auc_score)
+                             recall_score, roc_auc_score, average_precision_score)
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.class_weight import compute_sample_weight
 
@@ -467,6 +467,43 @@ def auc_scores(y_true, proba):
     scores["macro"] = float(np.mean([scores[c] for c in AQI_CATEGORIES]))
     scores["Dangerous"] = roc_auc_score(np.isin(y_true, DANGEROUS), proba[DANGEROUS].sum(axis=1))
     return pd.Series(scores)
+
+
+def pr_auc_scores(y_true, proba):
+    """PR AUC (average precision) for every category, their average, and the Dangerous alert.
+
+    The area under the precision-recall curve: how precise the alerts stay as the threshold
+    is lowered to catch more of the real days. Unlike ROC AUC it ignores the many correctly
+    ignored ordinary days, so it is the stricter ranking score for rare classes. A model that
+    guesses scores the class's share of days (about 0.06 for Dangerous in 2025), not 0.5.
+    """
+    y_true = np.asarray(y_true, dtype=str)
+    scores = {c: average_precision_score(y_true == c, proba[c]) for c in AQI_CATEGORIES}
+    scores["macro"] = float(np.mean([scores[c] for c in AQI_CATEGORIES]))
+    scores["Dangerous"] = average_precision_score(np.isin(y_true, DANGEROUS), proba[DANGEROUS].sum(axis=1))
+    return pd.Series(scores)
+
+
+def class_share(y_true):
+    """Each category's share of days, the macro average and the Dangerous share: the PR AUC of guessing."""
+    y_true = np.asarray(y_true, dtype=str)
+    scores = {c: float((y_true == c).mean()) for c in AQI_CATEGORIES}
+    scores["macro"] = float(np.mean([scores[c] for c in AQI_CATEGORIES]))
+    scores["Dangerous"] = float(np.isin(y_true, DANGEROUS).mean())
+    return pd.Series(scores)
+
+
+def log_loss_score(y_true, proba):
+    """Multi-class log loss: the mean of -ln(probability given to the category that happened).
+
+    The quantity XGBoost minimises while training (objective multi:softprob). `proba` is a
+    table with one column per category (proba_table): the true category's column is looked
+    up by name. scikit-learn's log_loss instead assumes the columns are in alphabetical
+    order (Good, Moderate, Poor, ...), which silently gives a wrong value for AQI order.
+    """
+    codes = pd.Categorical(np.asarray(y_true, dtype=str), categories=AQI_CATEGORIES).codes
+    p_true = proba[AQI_CATEGORIES].to_numpy()[np.arange(len(codes)), codes]
+    return float(-np.log(np.clip(p_true, 1e-15, 1)).mean())
 
 
 def rolling_validation(df, make_model, to_xy, val_years=range(2019, 2024), test_from=2024,

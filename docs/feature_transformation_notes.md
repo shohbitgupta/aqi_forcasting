@@ -1,54 +1,54 @@
 # Feature transformation notes
 
-Reusable notes on making a feature usable by the model. Each technique is explained once, with the example from the AQI forecasting project (`notebooks/aqi_prediction.ipynb`, section 4) as proof.
+Why logistic regression gets four transformed features in this project, and why the final model does not.
 
-**The general idea:** a feature can carry real signal but in a form the model cannot use. Linear models (logistic and linear regression), distance-based models (KNN, SVM) and neural networks are the ones affected. Tree models (decision trees, random forest, XGBoost) split on thresholds, so they generally use the raw feature as it is.
+**Where these are used:**
 
-| Symptom | Fix | Example in this project |
+| Model | Transforms | Where |
 |---|---|---|
-| Cyclical feature with a false jump at the wrap-around | [Cyclical (sin/cos) encoding](#1-cyclical-encoding) | `month` → `month_sin`, `month_cos` |
-| Very skewed feature with a long tail | [Log transform](#2-log-transform) | `precip_sum` → `precip_log` |
-| Feature mixes a real effect with a group's baseline | [Subtract the group's normal](#3-subtract-the-groups-normal) | `pressure_mean` → `pressure_rel` |
-| Direction plus strength (an angle) | [Split into vector parts](#4-vector-parts-for-directions) | wind → `wind_u_mean`, `wind_v_mean` |
-| Categories with no order | [One-hot encoding](#5-one-hot-encoding) | `city` |
+| Logistic regression | `pressure_rel`, `precip_log`, `month_sin`, `month_cos` instead of `pressure_mean`, `precip_sum`, `month` | `add_lr_features` in [`scripts/utility.py`](../scripts/utility.py), used in `experiments/lr_train_baseline.ipynb` |
+| Decision tree, random forest, XGBoost | **None:** the raw columns | `TREE_FEATURES` in `notebooks/aqi_prediction.ipynb` |
+| **The final model and the web service** (XGBoost) | **None:** the raw columns | `NUMERIC` in [`scripts/train.py`](../scripts/train.py); the API takes `month`, `pressure_mean` and `precip_sum` as they are |
+
+**Why only logistic regression:** it gives each feature one weight and adds them up, so it can only use a feature whose effect is roughly "more of X → more (or less) likely". Tree models split on thresholds ("month ≥ 11", then "city is Delhi", then "pressure > 985"), so they find these patterns in the raw columns. The data has many such non-linear patterns, which is one reason a tree model was chosen in the end ([`model_decisions.md`](model_decisions.md), Decision 12).
+
+**How the numbers below were measured:** on the training years only (2015–2022, 33,731 city-days), as `rho` = Spearman correlation with tomorrow's category numbered 0 (Good) to 5 (Severe). The same check is in `notebooks/aqi_prediction.ipynb`, section 4.
+
+| Symptom | Fix | In this project |
+|---|---|---|
+| Cyclical feature with a false jump at the wrap-around | [Cyclical (sin/cos) encoding](#1-cyclical-encoding-month) | `month` → `month_sin`, `month_cos` |
+| Very skewed feature with a long tail | [Log transform](#2-log-transform-rain) | `precip_sum` → `precip_log` |
+| Feature that mostly says which city it is | [Subtract the city's normal](#3-subtract-the-citys-normal-pressure) | `pressure_mean` → `pressure_rel` |
+| Direction plus strength | [Vector parts](#4-vector-parts-wind) | wind → `wind_u_mean`, `wind_v_mean` (all models) |
+| Categories with no order | [One-hot encoding](#5-one-hot-encoding-city) | `city` → 14 columns (all models) |
 
 ---
 
-## 1. Cyclical encoding
-
-Also called **cyclical feature encoding** or **sine/cosine (trigonometric) encoding**. In time-series work, the general form is **Fourier features** (Fourier terms).
+## 1. Cyclical encoding: month
 
 ### The problem
 
-A feature that **repeats in a cycle**, where the end of the cycle sits right next to the start. As a plain number, the model sees two problems:
+Month as a plain number (1–12) has two problems for logistic regression:
 
-1. **A false jump at the wrap-around.** 31 December and 1 January are one day apart, but as month numbers they are 12 and 1, the furthest apart any two months can be.
-2. **A shape a linear model cannot follow.** A linear model gives the feature one weight, so it can only learn "higher number → steadily more (or less) likely". A cyclical effect usually rises and falls within the cycle.
-
-It is **not** a problem of size: standardising the month (subtract the mean, divide by the standard deviation) would leave both problems in place.
-
-### The fix
-
-Place each value on a circle with two coordinates:
-
-```python
-angle = 2 * np.pi * value / period
-df['x_sin'] = np.sin(angle)
-df['x_cos'] = np.cos(angle)
-```
-
-`period` is the length of one full cycle.
-
-### Example: month in the AQI project
-
-Air quality is bad at **both ends** of the year and clean in the middle:
+1. **A false jump at the wrap-around.** December and January are neighbours, but as numbers they are 12 and 1, the furthest apart any two months can be.
+2. **A shape one weight cannot follow.** Air quality is bad at **both ends** of the year and clean in the middle, so "a higher month number → worse air" is wrong for half the year.
 
 | | Jan | … | Jul | … | Dec |
 |---|---|---|---|---|---|
 | Month number | 1 | | 7 | | 12 |
 | Air quality | **Bad** | | Clean | | **Bad** |
 
-On the circle:
+It is **not** a problem of scale: standardising the month would leave both problems in place.
+
+### The fix
+
+Place each month on a circle with two coordinates:
+
+```python
+angle = 2 * np.pi * df['month'] / 12
+df['month_sin'] = np.sin(angle)
+df['month_cos'] = np.cos(angle)
+```
 
 | Month | `month_cos` | `month_sin` |
 |---|---|---|
@@ -63,9 +63,9 @@ On the circle:
 
 - December (1.00, 0.00) and January (0.87, 0.50) are now neighbours.
 - `month_cos` is high in winter and low in the monsoon, which matches the pollution pattern in a straight line.
-- `month_sin` separates months that share the same `month_cos`: February (+0.87, air improving) and October (−0.87, crop burning starts, air getting worse) both have `month_cos` = 0.50.
+- `month_sin` separates months that share the same `month_cos`: February (+0.87, air improving) and October (−0.87, crop burning starts, air getting worse) both have `month_cos` = 0.50. This is why both columns are kept: with `month_cos` alone, February and October look the same.
 
-**Proof (training years, Spearman correlation with tomorrow's category):**
+### The result
 
 | Feature | rho |
 |---|---|
@@ -73,114 +73,70 @@ On the circle:
 | `month_cos` | **0.48** |
 | `month_sin` | 0.21 (weak alone, useful together with `month_cos`) |
 
-### Where it applies
+---
 
-| Feature | Period | The false jump |
-|---|---|---|
-| Month | 12 | December (12) → January (1) |
-| Hour of day | 24 | 23:00 → 00:00 |
-| Day of week | 7 | Sunday → Monday |
-| Day of year | 365 (or 365.25) | 31 Dec → 1 Jan |
-| Minute of hour | 60 | :59 → :00 |
-| Wind / compass direction, any angle | 360 | 359° → 0° |
+## 2. Log transform: rain
 
-### Rules
+**Problem:** rain (`precip_sum`) is extremely skewed: **57% of days have 0 mm**, but a few reach 251 mm (skew 7.8). Logistic regression's single weight gets pulled by those few storms, and the difference between a dry day and a day with light rain is lost.
 
-1. **Always use both sin and cos.** With only one, two different points get the same value (with cos only, February = October).
-2. **Use the right period.** 12 for months numbered 1–12, 24 for hours numbered 0–23. With the wrong period, the circle does not close.
-3. **Only for truly cyclical features.** Age, price and year do not wrap around.
-4. **Needed for** linear and logistic regression, KNN, SVM and neural networks.
-5. **Not needed for tree models.** A tree can split on "month ≥ 11 or month ≤ 1" directly. In this project, tree models keep the raw `month`.
+**Fix:** `precip_log = np.log1p(precip_sum)`, i.e. log(1 + rain), which keeps 0 mm at 0.
 
-### Alternatives
-
-| Option | Columns | Use when |
-|---|---|---|
-| **Sin/cos** (one pair) | 2 | The cycle has one smooth peak and one trough (winter vs monsoon) |
-| **One-hot** (one column per value) | period − 1 | Few values (7 weekdays, 12 months) and each value may behave differently, e.g. a sharp October jump |
-| **Fourier features** (several sin/cos pairs, k = 1, 2, 3, …) | 2k | The cycle has several peaks, e.g. traffic with a morning and an evening rush hour |
-| **Periodic splines** (`SplineTransformer(extrapolation='periodic')` in scikit-learn) | a few | A smooth but more flexible shape |
-
-Fourier features with harmonic *k*: `sin(2πk · value / period)` and `cos(2πk · value / period)`. With k = 1 this is plain cyclical encoding.
-
-### Check that it worked
-
-Compare the feature's correlation with the target before and after (as in the proof table above). If the encoded version is no stronger, the feature may not be cyclical in its effect, or one-hot may fit better.
+**Result:** the skew drops from **7.8 to 1.6**. Rain is one of the strongest weather signals (rho **−0.60**: more rain today, cleaner air tomorrow), and the log keeps that unchanged (−0.60 after), because a log does not change the order of the values. Only the extreme days stop dominating.
 
 ---
 
-## 2. Log transform
+## 3. Subtract the city's normal: pressure
 
-**Problem:** a very skewed feature: most values small, a few very large. A linear model's single weight gets pulled by the few extreme values, and the differences among the common small values are lost.
+**Problem:** air pressure is mostly **altitude**. The training-year normals run from 912 hPa in Bengaluru (about 900 m high) to 1008 hPa in Mumbai (sea level), a gap of 97 hPa. Within one city, pressure changes by under 1 hPa on a typical day and varies by about 6 hPa (standard deviation) over the years, so raw pressure mostly tells the model which city a row is from, which the `city` columns already say.
 
-**Fix:** `np.log1p(x)`, i.e. log(1 + x), which also handles zeros. Only for values ≥ 0.
-
-**Example:** rain (`precip_sum`) is 0 mm on most days but reaches 251 mm. `precip_log` cuts the skew from **7.8 to 1.6**. The rank correlation with the target does not change (a log keeps the order), but the linear model is no longer dominated by a handful of storms.
-
-**Alternative:** a 0/1 flag (`rained`) when *whether* it happened matters more than *how much*.
-
-**Rule of thumb:** consider it when |skew| > 1 and the feature goes into a linear model.
-
----
-
-## 3. Subtract the group's normal
-
-**Problem:** a feature mixes a real effect with a fixed baseline that differs by group. The model then mostly learns *which group* a row belongs to.
-
-**Fix:** subtract each group's mean, computed on the **training data only**:
+**Fix:** subtract each city's mean pressure, computed on the **training years only** (otherwise information from 2023–2025 leaks in):
 
 ```python
-group_mean = df_train.groupby('city')['pressure_mean'].mean()
-df['pressure_rel'] = df['pressure_mean'] - df['city'].map(group_mean)
+city_pressure = df_train.groupby('city')['pressure_mean'].mean()
+df['pressure_rel'] = df['pressure_mean'] - df['city'].map(city_pressure)
 ```
 
-**Example:** air pressure is mostly altitude. Bengaluru's normal is far lower than Delhi's (city normals differ by up to ~97 hPa), so raw pressure mostly says "this is Bengaluru". After subtracting each city's normal, the weather effect appears: higher pressure than usual means calm, stagnant air, and pollution builds up.
+**Result:**
 
-| Feature | rho with tomorrow's category |
+| Feature | rho |
 |---|---|
 | `pressure_mean` (raw) | 0.18 |
 | `pressure_rel` | **0.52** |
 
-**Rule:** compute the group means on the training split only; otherwise information from the validation and test years leaks in.
+Higher pressure than the city's normal goes with calm, stagnant air, in which pollution builds up.
+
+**Read with care:** much of this signal is the **season**. `pressure_rel` correlates at 0.81 with `month_cos` and −0.83 with `temp_min`: pressure is above normal in winter, the polluted season. The three stay together in logistic regression because each still adds a little on its own (VIF below 10, `notebooks/aqi_prediction.ipynb` section 5), but their separate weights should not be read as three independent effects.
 
 ---
 
-## 4. Vector parts for directions
+## 4. Vector parts: wind
 
-**Problem:** a direction plus a strength (wind, movement). The angle has the 359° → 0° jump (see section 1), and a direction means little without its strength: a calm day "from the north" is not the same as a storm from the north.
+**Problem:** wind is a direction plus a strength. The angle has the same false jump as the month (359° → 0°), and a direction means little without its strength: a calm day "from the north" is not a strong north wind.
 
-**Fix:** split it into vector components, which is cyclical encoding scaled by the strength:
+**Fix:** split the wind into an east-west part (u) and a north-south part (v). This is done once, when the weather is downloaded, in [`code/download_weather.py`](../code/download_weather.py):
 
 ```python
-rad = np.radians(direction)
-u = -speed * np.sin(rad)     # east-west part
-v = -speed * np.cos(rad)     # north-south part
+rad = np.deg2rad(h['wind_direction_10m'])
+h['wind_u'] = -h['wind_speed_10m'] * np.sin(rad)     # east-west part
+h['wind_v'] = -h['wind_speed_10m'] * np.cos(rad)     # north-south part
 ```
 
-The minus signs follow the meteorological convention: the reported direction is where the wind comes **from**, while u and v point where it blows **to**. For an angle that is already "towards" (a heading, for example), drop the minus signs.
+The minus signs are there because the reported direction is where the wind comes **from**, while u and v point where it blows **to**. The hourly u and v are then averaged into the day's `wind_u_mean` and `wind_v_mean`. This is also the correct way to average directions: a plain mean of 350° and 10° gives 180°, the opposite direction.
 
-**Example:** the dataset's `wind_u_mean` and `wind_v_mean` are built exactly this way in `code/download_weather.py`, so the EDA dropped the raw angle `wind_dir_mean`. Averaging u and v over a day is also the correct way to average directions: a plain mean of 350° and 10° gives 180°, the opposite direction.
-
----
-
-## 5. One-hot encoding
-
-**Problem:** categories with no natural order (city, product type). Numbering them (Bengaluru = 0, Delhi = 3) tells a linear model that cities have an order and a size.
-
-**Fix:** one 0/1 column per category.
-
-**Example:** `city` → 14 columns. Delhi gets `city_Delhi = 1` and 0 everywhere else.
-
-**Watch:** with many categories (hundreds), one-hot creates many sparse columns. Consider grouping rare categories into "other", or target encoding (computed on training data only).
+Unlike sections 1–3, **every model uses u and v**, including the final model. The EDA dropped the raw angle `wind_dir_mean`.
 
 ---
 
-## Checklist for a new problem
+## 5. One-hot encoding: city
 
-1. Does the feature **repeat in a cycle**? → cyclical encoding.
-2. Is it **very skewed** (|skew| > 1) and going into a linear model? → log transform or a 0/1 flag.
-3. Does its level mostly depend on a **group** (city, store, sensor)? → subtract the group's normal (training data only).
-4. Is it a **direction with a strength**? → vector components.
-5. Is it a **category with no order**? → one-hot.
-6. **Check:** compare the feature's correlation with the target before and after. Keep the transform only if it helps.
-7. **Tree models:** usually skip all of the above and use the raw features.
+**Problem:** the 14 cities have no order. Numbered (Bengaluru = 0, Chennai = 1, Delhi = 2, …), they would tell logistic regression that one city is "more" than another.
+
+**Fix:** one 0/1 column per city: Delhi gets `city=Delhi` = 1 and 0 in the other 13.
+
+**In this project** a `DictVectorizer` does this inside each model's pipeline, for logistic regression and for the final XGBoost model ([`scripts/train.py`](../scripts/train.py)). That is why the web service accepts the city as text, `"city": "Delhi"`, and the model turns it into the 14 columns itself.
+
+---
+
+## The other engineered features
+
+The trend features (`aqi_roll7_mean`, `aqi_roll7_std`, `aqi_diff1`, `aqi_dev7`), the pollutant flags (`has_pm25`, …) and `aqi_imputed` are used by every model. They are explained in `notebooks/eda.ipynb`, `notebooks/aqi_prediction.ipynb` (sections 2 and 5) and [`EDA_Decision_Document.pdf`](EDA_Decision_Document.pdf).

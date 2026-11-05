@@ -101,7 +101,7 @@ The data is committed, so everything runs after cloning; `code/` rebuilds it fro
 - Today's AQI is by far the strongest signal (Spearman ρ 0.88); seasonality is strong (10.4% of November days are Severe).
 - Outliers are real pollution episodes and are kept.
 
-**Features** ([`notebooks/aqi_prediction.ipynb`](notebooks/aqi_prediction.ipynb)): today's AQI; its 7-day mean and spread, change since yesterday and deviation from the previous week; one flag per prominent pollutant and one for a filled day; 13 weather values; month; city. 27 inputs in total.
+**Features** ([`notebooks/aqi_prediction.ipynb`](notebooks/aqi_prediction.ipynb)): today's AQI; its 7-day mean and spread, change since yesterday and deviation from the previous week; one flag per prominent pollutant and one for a filled day; 13 weather values; month; city. 27 inputs in total. Logistic regression also gets four transformed features (pressure relative to the city's normal, log of rain, month as sin/cos); the tree models and the final model use the raw columns ([`docs/feature_transformation_notes.md`](docs/feature_transformation_notes.md)).
 
 **Validation:** always by time, so a model is tested only on days after the ones it learned from. Tuned on 2015–2022 with 2023 for validation, confirmed with rolling validation over 2019–2023, and tested once on 2025.
 
@@ -247,7 +247,7 @@ aqi_forcasting/
 │   └── utility.py         # shared data preparation and evaluation helpers
 ├── models/xgb_final.bin   # the final model
 ├── outputs/               # executed notebooks as Markdown
-├── docs/                  # EDA decisions, model comparison and decisions, experiments, production plan
+├── docs/                  # EDA decisions, model comparison and decisions, experiments
 ├── deploy/                # AWS Lambda deployment script (optional)
 ├── Dockerfile, Dockerfile.render
 ├── pyproject.toml, uv.lock
@@ -261,10 +261,6 @@ python code/prepare_aqi.py        # -> data/processed/aqi_daily.csv
 python code/download_weather.py   # -> data/processed/weather_daily.csv (Open-Meteo, no key needed, cached per city)
 python code/merge_data.py         # -> data/processed/aqi_weather_2015_2025.csv
 ```
-
-## Production plan
-
-In production, a daily job at about 4:30 PM IST would fetch the new bulletin and weather and prepare each city's input, so user requests stay fast and do not depend on CPCB being online; every forecast would be checked against the next bulletin. See [`docs/production_plan.md`](docs/production_plan.md).
 
 ## Limitations
 

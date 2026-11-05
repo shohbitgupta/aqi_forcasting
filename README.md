@@ -178,6 +178,27 @@ Five ideas to raise overall accuracy were tested under the same rules ([`docs/ac
 
 ## Running locally
 
+### Verify in 5 minutes
+
+From a fresh clone to the API answering, locally and in Docker. Needs [uv](https://docs.astral.sh/uv/) and Docker; timed at about 2 minutes of commands on a laptop.
+
+```bash
+git clone https://github.com/shohbitgupta/aqi_forcasting.git && cd aqi_forcasting
+uv sync && source .venv/bin/activate            # Python 3.13 and the pinned packages (~10 s)
+python scripts/train.py                         # reproduces the Results table on 2025 (under a minute)
+
+uvicorn predict:app --app-dir scripts --port 8080 &   # the API, in the background
+sleep 5 && curl -X POST localhost:8080/predict -H "Content-Type: application/json" -d @demo.json
+kill %1                                         # stop it, freeing port 8080
+
+docker build -t aqi-forecast .                  # ~30 s
+docker run -d --rm --name aqi -p 8080:8080 aqi-forecast
+sleep 5 && curl -X POST localhost:8080/predict -H "Content-Type: application/json" -d @demo.json
+docker stop aqi
+```
+
+Both requests return Noida, **Poor**, P(Dangerous) 0.1081, as in [Quick start](#quick-start). The sections below explain each step.
+
 ### Setup
 
 Requires [uv](https://docs.astral.sh/uv/); Python 3.13 is installed by uv if needed.
@@ -190,6 +211,7 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 ```
 
 - The model is a pickle, so library versions are pinned to the ones it was trained with.
+- The experiment models in `experiments/models/` are stored with [Git LFS](https://git-lfs.com/): run `git lfs install` before cloning to rerun notebooks 5–8 (without it they are small text placeholders). Training, the service and Docker do not need them.
 - `uv sync --no-dev` installs only what the service and the command line need; the notebooks need the default `uv sync`.
 - For the notebooks: `python -m ipykernel install --user --name aqi-forecasting`, then open them in VS Code or `uv run --with jupyter jupyter lab`.
 - Without uv: `python3.13 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt` installs the same pinned versions for the service and the command line (not the notebooks). The file is generated from uv.lock; after changing dependencies, regenerate it with `uv export --no-dev --no-hashes --no-emit-project --format requirements-txt > requirements.txt`.
@@ -198,7 +220,7 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 ### Reproduce the results
 
 ```bash
-python scripts/train.py          # trains on 2015-2024, scores 2025 once, saves models/xgb_final.bin (about 10 s)
+python scripts/train.py          # trains on 2015-2024, scores 2025 once, saves models/xgb_final.bin (under a minute)
 ```
 
 The notebooks run in this order, since later experiments load the models saved by earlier ones in `experiments/models/`. Executed copies with every output are in [`outputs/`](outputs/).

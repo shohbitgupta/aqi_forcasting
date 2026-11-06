@@ -395,3 +395,7 @@ python code/merge_data.py         # -> data/processed/aqi_weather_2015_2025.csv
 
 - AQI bulletins: CPCB data compiled by Urban Emissions, redistributed here under [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html).
 - Weather data by [Open-Meteo.com](https://open-meteo.com/), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
+
+Demo : 
+<img width="1464" height="732" alt="Screenshot 2026-11-06 at 19 26 33" src="https://github.com/user-attachments/assets/837529b9-f28e-4f98-94e6-d24fe1c33640" />

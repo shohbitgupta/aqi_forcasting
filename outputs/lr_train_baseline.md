@@ -13,7 +13,7 @@ TARGET = 'tomorrow_status'
 TREND = ['aqi_roll7_mean', 'aqi_roll7_std', 'aqi_diff1', 'aqi_dev7']
 ```
 
-### Load the data ###
+## 1. Load the data
 
 ```python
 DATA_PATH = '../data/processed/aqi_weather_2015_2025.csv'
@@ -31,7 +31,7 @@ df.shape
 (51072, 20)
 ```
 
-### Data Cleaning ###
+## 2. Data cleaning
 
 ```python
 df = prepare_dataset(DATA_PATH)                 # EDA pipeline: target, pollutant flags, gap filling, trend features
@@ -46,7 +46,7 @@ print(f'Dropped {before - len(df)} rows with empty trend features')   # expect 1
 Dropped 195 rows with empty trend features
 ```
 
-### Split the dataset on timeline ###
+## 3. Time-based split
 
 ```python
 df_train, df_val, df_test = split_train_val_test(df)
@@ -382,11 +382,11 @@ df_train
 <p>33543 rows × 35 columns</p>
 </div>
 
-### Select the features ###
+## 4. Feature selection
 
 Logistic regression uses 23 columns: 15 numeric, 7 yes/no (6 pollutant flags + `aqi_imputed`) and `city`. `aqi_roll7_mean` is left out because it nearly duplicates `aqi_today` (VIF check in `aqi_prediction.ipynb`).
 
-The checks below stop with a clear message if anything is wrong, instead of training a bad model silently.
+The checks below raise an error on any mismatch rather than training silently on bad input.
 
 ```python
 import pickle
@@ -441,9 +441,9 @@ print('Checks passed: no missing or infinite values; all six classes in train.')
 Checks passed: no missing or infinite values; all six classes in train.
 ```
 
-### Turn each row into a dictionary ###
+## 5. Rows to dictionaries
 
-`DictVectorizer` reads one dictionary per row. The web service will receive the same thing (a JSON request), so training and prediction use exactly the same input format.
+`DictVectorizer` takes one dictionary per row, the same format the web service receives (a JSON request), so training and prediction share one input format.
 
 ```python
 def to_records(part):
@@ -465,7 +465,7 @@ array(['Satisfactory', 'Satisfactory', 'Good', ..., 'Severe', 'Severe',
        'Severe'], shape=(33543,), dtype=object)
 ```
 
-### Build and train the model ###
+## 6. Build and train the model
 
 One `Pipeline` with three steps, all fitted on the training years only:
 
@@ -475,7 +475,7 @@ One `Pipeline` with three steps, all fitted on the training years only:
 | `StandardScaler` | Puts every column on the same scale (AQI runs 0–500, flags 0/1), so the regularisation treats them equally and the solver converges |
 | `LogisticRegression` | `class_weight='balanced'` makes rare classes (Severe) count more; `C=1.0` is the default strength of regularisation |
 
-If the solver does not converge, training stops with an error instead of a warning.
+Non-convergence raises an error instead of a warning.
 
 ```python
 def make_model(class_weight, regularisation=1.0, max_itr = 2000):
@@ -505,9 +505,9 @@ Columns after DictVectorizer: 36
 Classes, in the model's own (alphabetical) order: ['Good', 'Moderate', 'Poor', 'Satisfactory', 'Severe', 'Very Poor']
 ```
 
-### Evaluate on validation (2023) ###
+## 7. Evaluate on validation (2023)
 
-The same `evaluate` function as the baselines, so the comparison is fair. The bar is **persistence: macro F1 0.651**.
+Same `evaluate` function as the baselines. The bar is **persistence: macro F1 0.651**.
 
 ```python
 pred_val = model.predict(X_val)
@@ -567,7 +567,7 @@ results.round(3)
 </table>
 </div>
 
-Where does it win and lose? Persistence is right on every day the category stays the same and wrong on every day it changes:
+Wins and losses split by change vs unchanged days (persistence is right on every unchanged day and wrong on every change day):
 
 ```python
 changed = df_val['status_today'].astype(str).to_numpy() != y_val
@@ -677,7 +677,7 @@ cm
 </table>
 </div>
 
-**Do the weights make sense?** The weights for *Severe tomorrow*, per standard deviation of each feature. Plus means "more of this → Severe more likely".
+**Weights for *Severe tomorrow***, per standard deviation of each feature. Positive = more of this makes Severe more likely.
 
 ```python
 # Do the weights make sense? Weights for "Severe tomorrow" (per standard deviation of each feature)
@@ -762,7 +762,7 @@ severe.round(2).to_frame('weight for Severe')
 </table>
 </div>
 
-**Probabilities come back in the model's own order**, which is alphabetical (`model.classes_`), not Good → Severe. Always pair them with `model.classes_`; otherwise a probability can be shown under the wrong category.
+**Probabilities are returned in `model.classes_` order** (alphabetical, not Good → Severe). Always pair them with `model.classes_`, otherwise a probability can be shown under the wrong category.
 
 ```python
 # Probabilities come back in model.classes_ order (alphabetical), NOT in AQI_CATEGORIES order
@@ -820,16 +820,16 @@ example.round(3).to_frame('probability')
 
 **Findings:**
 - **The first logistic regression does not beat persistence.** Macro F1 **0.598** against **0.651**, accuracy 0.663 against 0.710.
-- **It wins where persistence cannot:** it gets **35.5% of the change days** right (persistence: 0%) and catches **37 of the 51 Severe days** (recall 0.73, against 0.53).
-- **But it breaks too many easy days:** it keeps only **78.8%** of the unchanged days right (persistence: 100%).
-- **It says "Severe" far too often:** 122 times for 51 real Severe days (precision 0.30). This is the drift effect: `class_weight='balanced'` learned from a period with 3.1% Severe days, but 2023 has 1.0%.
-- **The weights make sense:** `aqi_today` dominates (+6.87). Strong wind, rain and warm nights lower the chance of Severe. A sudden jump above last week (`aqi_dev7`, −1.05) also lowers it, the same "AQI falls back after a spike" effect as in the EDA.
+- **It wins where persistence cannot:** **35.5% of the change days** right (persistence: 0%) and **37 of the 51 Severe days** caught (recall 0.73, against 0.53).
+- **It breaks too many easy days:** only **78.8%** of the unchanged days right (persistence: 100%).
+- **It predicts "Severe" far too often:** 122 times for 51 real Severe days (precision 0.30). Drift effect: `class_weight='balanced'` learned from a period with 3.1% Severe days, but 2023 has 1.0%.
+- **The weights are plausible:** `aqi_today` dominates (+6.87). Strong wind, rain and warm nights lower the chance of Severe. A sudden jump above last week (`aqi_dev7`, −1.05) also lowers it, the same "AQI falls back after a spike" effect as in the EDA.
 
-**What came next:** the same model **without class weights** (below). It turns out the over-prediction of Severe comes from the class weights, not from `aqi_today`. The discussion at the end of the notebook compares both versions.
+**Next:** the same model **without class weights** (section 9) shows the over-prediction of Severe comes from the class weights, not from `aqi_today`. Both versions are compared in the Discussion.
 
-### Save the model ###
+## 8. Save the model
 
-Everything the web service will need goes into one file:
+One file with everything the web service needs:
 
 | Key | Why it is needed |
 |---|---|
@@ -877,9 +877,9 @@ print('Reloaded model gives identical predictions.')
 Reloaded model gives identical predictions.
 ```
 
-### Training without weights ###
+## 9. Training without class weights
 
-The same pipeline with `class_weight=None`: every day counts the same during training. The question: does the over-prediction of Severe come from the class weights or from the features?
+Same pipeline with `class_weight=None` (every day weighted equally), to test whether the over-prediction of Severe comes from the class weights or from the features.
 
 ```python
 model_no_weights = make_model(None)
@@ -969,9 +969,7 @@ results_nw.round(3)
 
 ### Prediction distribution check
 
-How often does the model **predict** each category, compared with how often it really **happens**? This is a bias check on the predictions. It is not *drift*: drift is a change in the **data** over time (e.g. Severe falling from 3.1% of training days to 1.0% in 2023).
-
-Matching shares are necessary but not enough: a forecast could match the shares and still put the categories on the wrong days.
+Predicted vs actual share of each category: a bias check on the predictions, not *drift* (a change in the **data** over time, e.g. Severe falling from 3.1% of training days to 1.0% in 2023). Matching shares are necessary but not sufficient: a forecast can match them and still put the categories on the wrong days.
 
 ```python
 right_nw = pred_val_nw == y_val
@@ -1089,7 +1087,7 @@ dist.round(2)
 </table>
 </div>
 
-**Weights for Severe, both models.** Do the weights change direction, or only size? And how does the intercept (the starting value for Severe) differ? A higher intercept means a lower bar for saying "Severe".
+**Weights for Severe, both models:** whether each weight changes direction or only size, and how the intercept (the starting value for Severe) differs. A higher intercept means a lower bar for predicting Severe.
 
 ```python
 (pred_val_nw == 'Severe').sum()          # compare with (pred_val == 'Severe').sum() and 51 real Severe days
@@ -1209,7 +1207,7 @@ Severe intercept: balanced -5.25 | no class weights -7.01
 </table>
 </div>
 
-### Confusion Matrix
+### Confusion matrix
 
 ```python
 cm_nw = pd.DataFrame(confusion_matrix(y_val, pred_val_nw, labels=AQI_CATEGORIES),
@@ -1302,7 +1300,7 @@ cm_nw
 </table>
 </div>
 
-**TP, FN, FP and TN for one category.** With six categories, each category is treated as "this category vs all the others" (*one-vs-rest*). Example: Severe, from the no-weights matrix above.
+**One-vs-rest counts for Severe** (no-weights matrix above):
 
 | Count | Meaning | Where in the table | Value |
 |---|---|---|---|
@@ -1311,10 +1309,7 @@ cm_nw
 | **FP** | Not Severe, but predicted Severe | The rest of the Severe **column**: 0+0+0+2+9 | 11 |
 | **TN** | Not Severe, not predicted Severe | Everything else: 5,104 − 20 − 31 − 11 | 5,042 |
 
-- **Recall** = TP ÷ (TP + FN) = 20 ÷ 51 = **0.39**: of the real Severe days, how many did we catch?
-- **Precision** = TP ÷ (TP + FP) = 20 ÷ 31 = **0.65**: when we said Severe, how often were we right?
-
-"Diagonal ÷ row total" is TP ÷ (TP + FN), and "diagonal ÷ column total" is TP ÷ (TP + FP). TN is not used by recall, precision or F1, which is why accuracy (which counts all those easy TNs) can mislead on rare categories.
+Recall = TP ÷ (TP + FN) = 20 ÷ 51 = **0.39**; precision = TP ÷ (TP + FP) = 20 ÷ 31 = **0.65**. TN is not used by recall, precision or F1, which is why accuracy (dominated by TNs) can mislead on rare categories.
 
 ```python
 counts = pd.DataFrame({
@@ -1418,10 +1413,8 @@ array([[5042,   11],
 ```
 
 ### Macro F1
-F1 = 2 × precision × recall / (precision + recall)
 
-
-F1 = 2·TP / (2·TP + FP + FN)
+F1 = 2 × precision × recall / (precision + recall) = 2·TP / (2·TP + FP + FN). Macro F1 = mean over the six categories.
 
 ```python
 counts['f1'] = 2 * counts['TP'] / (2 * counts['TP'] + counts['FP'] + counts['FN'])
@@ -1654,7 +1647,7 @@ comparison
 </table>
 </div>
 
-### Save the no weights model
+### Save the no-weights model
 
 ```python
 MODEL_DIR = Path('models')
@@ -1680,9 +1673,9 @@ print(f'Saved: {MODEL_PATH.resolve()} ({MODEL_PATH.stat().st_size / 1024:.0f} KB
 Saved: /Users/sshobhitggupta/Documents/datatalk_ml_zoomchamp/midterm_project/aqi_forcasting/experiments/models/lr_no_weights.bin (5 KB)
 ```
 
-### "Dangerous" alert (Very Poor or Severe) ###
+## 10. "Dangerous" alert (Very Poor or Severe)
 
-Both categories harm health, especially for children and older people. The model keeps the six categories (authorities act differently on Very Poor and Severe days), and the **alert is derived from its prediction**: Dangerous = the forecast is Very Poor or Severe. With 419 real Dangerous days, this is also a much more stable measure than Severe alone (51 days).
+Both categories harm health, especially for children and older people. The model keeps the six categories (authorities act differently on Very Poor and Severe days); the **alert is derived from its prediction**: Dangerous = the forecast is Very Poor or Severe. With 419 real Dangerous days, it is also a much more stable measure than Severe alone (51 days).
 
 ```python
 BAD = ['Very Poor', 'Severe']                         # "Dangerous": Very Poor or worse

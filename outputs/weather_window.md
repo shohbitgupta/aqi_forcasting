@@ -311,7 +311,7 @@ pd.DataFrame(rows).set_index('version').round(3)
 
 ## 4. Conclusion
 
-- **The 8 evening hours carry real information about tomorrow.** Moving the weather to the bulletin's window, which drops them, costs about **1.5 points** of accuracy in validation, in every one of the five years, mostly on days the category changes. Those hours are the start of the target's window: in effect a very short-range forecast.
-- **This is not a leak in practice.** In training those hours are measured; live, at about 5 PM, the service gets them from Open-Meteo as short-range estimates (0-8 hours ahead), so it keeps most of the benefit. **The current calendar-day weather stays.**
+- **The 8 evening hours carry real information about tomorrow.** Moving the weather to the bulletin's window, which drops them, costs about **1.5 points** of accuracy in validation, in each of the five years, mostly on days the category changes. Those hours are the start of the target's window, effectively a very short-range forecast.
+- **Not a leak in practice.** In training those hours are measured; live, at about 5 PM, the service gets them from Open-Meteo as short-range estimates (0-8 hours ahead), so it keeps most of the benefit. **The current calendar-day weather stays.**
 - The 2025 test and the live days move by about half a point either way: within noise next to five years of validation.
 - **Weather for the whole target window would add about 1 point** over the current inputs (the ceiling). That is the only weather gain left, and it needs an archive of past weather forecasts to train on honestly.

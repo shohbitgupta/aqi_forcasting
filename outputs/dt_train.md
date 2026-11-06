@@ -2,15 +2,15 @@
 
 # Decision Tree: Train and Compare
 
-**Why a tree?** Logistic regression gives every feature one straight-line weight. The EDA showed patterns a straight line cannot follow:
+**Motivation:** logistic regression gives every feature one linear weight. The EDA showed patterns a linear model cannot follow:
 
 - **Bends:** `temp_min` drops a lot from Good to Poor, then goes flat.
 - **U-shapes:** `humidity_mean` falls, then rises again.
 - **Combinations:** Severe days often need two things at once, *high AQI **and** stagnant air*.
 
-A decision tree asks yes/no questions one after another (in the trained tree: "is `aqi_today` above 204?", then "is the 7-day average above 178?"), so it can follow bends and combinations.
+A decision tree chains yes/no threshold splits (in the trained tree: `aqi_today` above 204, then the 7-day average above 178), so it can follow bends and combinations.
 
-**This notebook:** train a decision tree, tune how big it may grow, and compare it with **persistence** (the bar, macro F1 0.651) and the best **logistic regression** (`models/lr_best.bin`) on the same 2023 days, using macro F1, precision, recall, Severe misses and false alarms, and the Dangerous alert.
+**Scope:** train a decision tree, tune its size, and compare it with **persistence** (the bar, macro F1 0.651) and the best **logistic regression** (`models/lr_best.bin`) on the same 2023 days, using macro F1, precision, recall, Severe misses and false alarms, and the Dangerous alert.
 
 Decisions so far: [`docs/model_decisions.md`](../docs/model_decisions.md).
 
@@ -114,9 +114,9 @@ def macro_f1(y_true, y_pred):
     return f1_score(y_true, y_pred, labels=AQI_CATEGORIES, average='macro')
 ```
 
-## 4. A tree without limits: overfitting in action
+## 4. Unconstrained tree: overfitting
 
-First, a tree that may grow as large as it wants.
+A tree with no size limits.
 
 ```python
 free_tree = make_tree().fit(X_train, y_train)            # no limits at all
@@ -139,18 +139,18 @@ Macro F1 on training years: 1.000
 Macro F1 on 2023:           0.513   (persistence 0.651)
 ```
 
-**This is overfitting.** The tree grew **6,700 leaves**, about one leaf for every 5 training days. It memorised the training years (macro F1 **1.000**), but on 2023 it scores only **0.513**, far below persistence.
+**This is overfitting.** The tree grew **6,700 leaves**, about one leaf per 5 training days. It memorised the training years (macro F1 **1.000**) but scores only **0.513** on 2023, far below persistence.
 
-Compare logistic regression: training 0.649, 2023 0.647, no gap. A straight-line model is too simple to memorise; a tree can memorise everything, so it **must** be held back. Two settings do that:
+Logistic regression shows no gap (training 0.649, 2023 0.647): it is too simple to memorise. A tree must be constrained; two settings do that:
 
 | Setting | Meaning | Effect |
 |---|---|---|
 | `max_depth` | How many questions in a row the tree may ask | Fewer questions → simpler tree |
 | `min_samples_leaf` | How many training days every final group (leaf) must contain | A leaf of 100 days cannot memorise one odd day |
 
-## 5. Tuning: how big should the tree be?
+## 5. Tuning tree size
 
-Every combination of 6 depths × 5 leaf sizes × 2 class weightings = 60 trees, each scored on the training years and on 2023.
+Grid: 6 depths × 5 leaf sizes × 2 class weightings = 60 trees, each scored on the training years and on 2023.
 
 ```python
 DEPTHS = [3, 5, 8, 10, 12, None]                         # None = no depth limit
@@ -819,10 +819,10 @@ pd.DataFrame(confusion_matrix(y_val, pred_tree, labels=AQI_CATEGORIES),
 | Change days right | 0% | **35.3%** | 27.8% |
 | Unchanged days right | **100%** | 88.3% | 90.4% |
 
-- **The tree is the first model to beat persistence on macro F1** (0.658 against 0.651). But the margin (0.007) is smaller than the jumps between neighbouring tree settings (about 0.01), so it is a **narrow, fragile** win. Section 9 checks it on five years.
-- **Where the tree is better than logistic regression: the rare ends.** Good F1 0.62 against 0.52 (it catches 156 of 293 Good days, logistic regression 115), and Severe F1 0.53 against 0.49 (it catches 25 Severe days instead of 20). That is what lifts its macro F1.
-- **Where logistic regression is better:** the middle categories and the **Dangerous alert**: it warns about more Dangerous days (81% against 77%) *and* is right more often (76% against 74%). It also gets more change days right (35% against 28%).
-- **The tree stays closer to persistence:** more unchanged days right (90%), fewer change days. It is a more cautious model.
+- **The tree is the first model to beat persistence on macro F1** (0.658 against 0.651), but the margin (0.007) is smaller than the jumps between neighbouring tree settings (about 0.01): a **narrow, fragile** win. Section 9 checks it on five years.
+- **Tree better than logistic regression at the rare ends:** Good F1 0.62 against 0.52 (156 of 293 Good days caught, logistic regression 115), Severe F1 0.53 against 0.49 (25 Severe days caught instead of 20). This is what lifts its macro F1.
+- **Logistic regression better on the middle categories and the Dangerous alert:** higher recall (81% against 77%) *and* precision (76% against 74%). It also gets more change days right (35% against 28%).
+- **The tree stays closer to persistence:** more unchanged days right (90%), fewer change days. It is the more cautious model.
 
 ## 8. What did the tree learn?
 
@@ -911,16 +911,16 @@ plt.show()
 ![chart](dt_train_files/dt_train_28_2.png)
 
 **Findings:**
-- **`aqi_today` does 83% of the work.** The tree first sorts days by today's AQI, exactly like persistence, and then refines with a few other features.
-- **The tree rediscovered the official category limits on its own.** Its first questions are about `aqi_today` at 49.5, 103.5, 204.5 and 307.5, right next to the CPCB boundaries at 50 (Good / Satisfactory), 100 (Satisfactory / Moderate), 200 (Moderate / Poor) and 300 (Poor / Very Poor). Nobody told it those limits; it found them in the data.
-- The next most useful features are the **weekly average** (`aqi_roll7_mean`), **rain** and **maximum wind speed**: the weather that clears pollution.
-- So the tree is largely "persistence with corrections". That explains why it scores close to persistence and why the win is narrow.
+- **`aqi_today` does 83% of the work.** The tree first sorts days by today's AQI, like persistence, then refines with a few other features.
+- **The tree recovered the official category limits from the data.** Its first questions are about `aqi_today` at 49.5, 103.5, 204.5 and 307.5, next to the CPCB boundaries at 50 (Good / Satisfactory), 100 (Satisfactory / Moderate), 200 (Moderate / Poor) and 300 (Poor / Very Poor).
+- Next most useful: the **weekly average** (`aqi_roll7_mean`), **rain** and **maximum wind speed**, the weather that clears pollution.
+- The tree is largely "persistence with corrections", which explains why it scores close to persistence and why the win is narrow.
 
-## 9. Rolling validation: is the win real?
+## 9. Rolling validation: checking the 2023 win
 
-Everything above was scored on **one** year, 2023. One year is noisy: tree scores jumped by about 0.01 between neighbouring settings, more than the tree's margin over persistence.
+All results above use **one** year (2023), which is noisy: tree scores moved by about 0.01 between neighbouring settings, more than the tree's margin over persistence.
 
-**Rolling validation** repeats the comparison on five years. Each round learns only from the years **before** the year it scores, exactly as in real use:
+**Rolling validation** repeats the comparison on five years. Each round trains only on the years **before** the year it scores, as in real use:
 
 | Round | Learns from | Scores on |
 |---|---|---|
@@ -1613,13 +1613,13 @@ plt.show()
 ![chart](dt_train_files/dt_train_36_3.png)
 
 **Findings:**
-- **On five years, the tree does not beat persistence: it ties.** The chosen tree averages **0.631**, persistence 0.634: a mean gap of **−0.003**. It wins in 3 of the 5 years by a hair (+0.002 to +0.006) and loses clearly in 2022 (−0.023). The +0.007 on 2023 was a good year, not a reliable win.
-- **Logistic regression does worse over five years than 2023 suggested:** mean 0.613, **−0.021** below persistence, ahead only in 2021. It loses badly in 2019 (−0.065, learned from only four years) and in 2022 (−0.045). Its scores also move the most from year to year (spread 0.051).
+- **Over five years the tree ties with persistence.** The chosen tree averages **0.631**, persistence 0.634: a mean gap of **−0.003**. It wins in 3 of the 5 years by a hair (+0.002 to +0.006) and loses clearly in 2022 (−0.023). The +0.007 on 2023 was a good year, not a reliable win.
+- **Logistic regression is worse over five years than 2023 suggested:** mean 0.613, **−0.021** below persistence, ahead only in 2021. It loses badly in 2019 (−0.065, learned from only four years) and in 2022 (−0.045). Its scores also vary most from year to year (spread 0.051).
 - **The chosen tree setting holds up.** At least 100 days per leaf is still among the best (mean 0.631, tied with 200). Smaller leaves (50) overfit (training gap 0.050) and never beat persistence; larger leaves (400) or a shallow tree (depth 5) are too simple and never beat it either.
-- **The years differ more than the models do.** Persistence itself ranges from 0.609 (2019) to 0.655 (2020). That is why one validation year can make a model look better or worse than it is.
-- **2022 is hard for every learned model.** It had only 32 Severe days, far fewer than the years the models learned from: the drift seen earlier. Models trained on more polluted years expect more bad days than 2022 delivered.
+- **Years differ more than models do.** Persistence itself ranges from 0.609 (2019) to 0.655 (2020), so one validation year can make a model look better or worse than it is.
+- **2022 is hard for every learned model.** It had only 32 Severe days, far fewer than the training years (the drift seen earlier), so models trained on more polluted years expect more bad days than 2022 delivered.
 
-**What this means:** no model so far **reliably** beats "tomorrow = today". From now on, a model only counts as better if it beats persistence **on average over the five years and in most of them**, not just in 2023.
+**Implication:** no model so far **reliably** beats "tomorrow = today". From now on, a model only counts as better if it beats persistence **on average over the five years and in most of them**, not just in 2023.
 
 ## 10. Save the model
 
@@ -1650,13 +1650,13 @@ Saved and verified: /Users/sshobhitggupta/Documents/datatalk_ml_zoomchamp/midter
 
 ## Discussion
 
-1. **A tree must be held back, or it memorises.** Without limits: 1.000 on training, 0.513 on 2023. With at least 100 days per leaf: 0.668 and 0.658. This is the overfitting that logistic regression, being too simple to memorise, never showed.
+1. **A tree must be constrained, or it memorises.** Without limits: 1.000 on training, 0.513 on 2023. With at least 100 days per leaf: 0.668 and 0.658. Logistic regression, too simple to memorise, never showed this overfitting.
 2. **On 2023 the tree narrowly beats persistence** (0.658 vs 0.651), mostly by doing better than logistic regression at the **rare ends** (Good and Severe). **Over five years it only ties** (mean −0.003, ahead in 3 of 5 years), and logistic regression falls behind (mean −0.021).
 3. **No model wins everything yet:**
    - for the six-category score (macro F1): **decision tree**;
    - for days right and the **Dangerous** health alert: **logistic regression**;
    - for Severe false alarms: **logistic regression** (11);
    - for Severe days caught: **persistence** (27), the tree close behind (25).
-4. **One validation year is not enough.** A single tree's score jumps by about 0.01 between neighbouring settings, and persistence itself varies from 0.609 to 0.655 between years. Rolling validation over 2019–2023 is now the standard check for every model.
+4. **One validation year is not enough.** A single tree's score moves by about 0.01 between neighbouring settings, and persistence itself varies from 0.609 to 0.655 between years. Rolling validation over 2019–2023 is now the standard check for every model.
 
-**Next: random forest.** It trains many trees on slightly different samples of the data and lets them vote. Averaging removes much of the luck of a single tree. Then XGBoost. Both are judged with the same `forecast_scorecard` on 2023 **and** with `rolling_validation`: the target is to beat persistence on average over the five years and in most of them.
+**Next: random forest** (many trees on slightly different samples of the data, averaged, which removes much of a single tree's variance), then XGBoost. Both are judged with the same `forecast_scorecard` on 2023 **and** with `rolling_validation`; the target is to beat persistence on average over the five years and in most of them.

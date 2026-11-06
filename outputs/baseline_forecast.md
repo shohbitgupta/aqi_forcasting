@@ -2,13 +2,9 @@
 
 # Persistence Baseline: How Good Is "Tomorrow = Today"?
 
-Before training any model, we need a **ruler**. A score like "71% accurate" means nothing on its own: it could be brilliant or useless, depending on how hard the problem is. So the first question is:
+A score such as "71% accurate" is only meaningful relative to what is achievable without a model. This notebook scores four rule-based forecasters (no ML) on validation and keeps the strongest as the **baseline** every model must beat.
 
-> **What score can we get without any machine learning at all?**
-
-This notebook answers it with four "lazy forecasters" who know no ML, and keeps the strongest one as the **baseline** every model must beat.
-
-Every number is calculated **by hand** with plain pandas: counting days, adding and dividing. Section 10 checks the results against scikit-learn.
+Metrics are computed directly with pandas (counts and ratios); section 10 cross-checks them against scikit-learn.
 
 ## 1. Setup
 
@@ -27,12 +23,12 @@ TREND = ['aqi_roll7_mean', 'aqi_roll7_std', 'aqi_diff1', 'aqi_dev7']
 
 ## 2. The same days the models will use
 
-A comparison is only fair if both sides play by the same rules, like a race on the same track:
+Evaluation conditions are identical to the models':
 
 | Rule | How |
 |---|---|
 | **Same days** | Drop the same 195 rows (empty trend features) that the models drop, in every split |
-| **No peeking at the future** | A forecaster may only use what is known **today** |
+| **No look-ahead** | A forecaster may only use what is known **today** |
 | **Test set stays locked** | All comparisons happen on **validation (2023)**. The test years are opened once, at the very end |
 
 ```python
@@ -49,9 +45,9 @@ print('train:', len(df_train), '| validation:', len(df_val), '| test:', len(df_t
 train: 33543 | validation: 5104 | test: 9985
 ```
 
-## 3. Four lazy forecasters
+## 3. Four rule-based forecasters
 
-Each forecaster uses exactly **one** source of information, in the simplest possible way:
+Each uses exactly **one** source of information:
 
 | Forecaster | Rule | Information it uses |
 |---|---|---|
@@ -60,7 +56,7 @@ Each forecaster uses exactly **one** source of information, in the simplest poss
 | **C, persistence** | Say tomorrow will be the same as today | **Today** |
 | **D** | Say the category of the average AQI over the last 7 days | **The recent week** |
 
-A and B "learn" their answer from the training years (2015–2022) only. C and D need no learning: they only look at the city's own recent days. Below, forecaster B's answers for Delhi, one per month.
+A and B are fitted on the training years (2015–2022) only; C and D use only the city's own recent days. Below: forecaster B's prediction for Delhi, per month.
 
 ```python
 # Forecaster A: always say the most common category of the training years
@@ -102,7 +98,7 @@ Name: typical, dtype: category
 Categories (6, str): ['Good' < 'Satisfactory' < 'Moderate' < 'Poor' < 'Very Poor' < 'Severe']
 ```
 
-Forecaster D takes `aqi_roll7_mean` (the average AQI of today and the 6 days before) and turns that number into its CPCB category with `aqi_to_category` (0–50 Good, 51–100 Satisfactory, …, 401–500 Severe). It asks: *does a calmer view of the whole week predict better than today alone?*
+Forecaster D maps `aqi_roll7_mean` (mean AQI of today and the previous 6 days) to its CPCB category with `aqi_to_category` (0–50 Good, 51–100 Satisfactory, …, 401–500 Severe). It tests whether a smoothed weekly view predicts better than today alone.
 
 ```python
 # Forecaster D: the category of the last 7 days' average AQI (today included)
@@ -171,7 +167,7 @@ df_val[['city', 'date', 'aqi_today', 'aqi_roll7_mean']].assign(week_average=week
 </table>
 </div>
 
-Now put the real answer and the four forecasts side by side, one row per validation day:
+Actual category and the four forecasts, one row per validation day:
 
 ```python
 # Put the real answer and the four forecasts side by side, one row per validation day
@@ -309,13 +305,13 @@ val[val['city'] == 'Delhi'].iloc[300:310]
 </table>
 </div>
 
-**Look at Delhi in early November 2023.** On 2 November the air jumped from Very Poor to Severe. Persistence said Very Poor: it only "sees" the change a day later. On 6 November the air improved to Very Poor, but persistence still said Severe. **Persistence is always one day late at every turn.**
+**Delhi, early November 2023:** on 2 November the category jumped from Very Poor to Severe; persistence said Very Poor. On 6 November it improved to Very Poor; persistence still said Severe. **Persistence lags every transition by one day.**
 
-The week average (D) is even later: the air was Severe from 2 November, but the 7-day average only reached Severe on **6 November**, because it still carries the calmer days from the week before. Keep this picture in mind; reacting late is the weakness a model has to fix.
+The 7-day average (D) lags further: the air was Severe from 2 November, but the average only reached Severe on **6 November**, because it still includes the calmer days of the previous week. Reacting late is the weakness a model has to fix.
 
-## 4. Accuracy, by hand
+## 4. Accuracy
 
-Accuracy is the simplest score: **correct days ÷ all days**.
+Accuracy = **correct days ÷ all days**.
 
 ```python
 correct = val['persistence'] == val['actual']        # True where the forecast was right
@@ -332,15 +328,9 @@ Correct: 3626
 Accuracy: 0.71
 ```
 
-## 5. The confusion table, by hand
+## 5. Confusion table
 
-Accuracy hides *which* mistakes happen. The confusion table counts the days for every pair of (what really happened, what was forecast):
-
-- **Rows** = what really happened tomorrow.
-- **Columns** = what persistence forecast.
-- **The diagonal** = correct days. Everything else is a mistake.
-
-`pd.crosstab` simply counts the days in each cell.
+Days counted per (actual, forecast) pair with `pd.crosstab`. **Rows** = actual category tomorrow, **columns** = persistence forecast, **diagonal** = correct days.
 
 ```python
 def confusion_table(actual, predicted):
@@ -438,15 +428,15 @@ cm
 
 ## 6. Recall, precision and F1 for one category
 
-Think of a **smoke alarm** for Severe days:
+Computed for Severe from the confusion table:
 
-| Score | Question | From the table |
+| Score | Definition | From the table |
 |---|---|---|
-| **Recall** | Of all the real Severe days, how many did we catch? | diagonal ÷ **row** total |
-| **Precision** | Of all the times we said "Severe", how often were we right? | diagonal ÷ **column** total |
-| **F1** | One number that is high only when **both** are high | 2 × precision × recall ÷ (precision + recall) |
+| **Recall** | Share of real Severe days forecast as Severe | diagonal ÷ **row** total |
+| **Precision** | Share of "Severe" forecasts that were correct | diagonal ÷ **column** total |
+| **F1** | High only when **both** are high | 2 × precision × recall ÷ (precision + recall) |
 
-Missing a fire is dangerous (low recall). An alarm that rings all the time gets ignored (low precision).
+Low recall means missed Severe days; low precision means false alarms.
 
 ```python
 c = 'Severe'
@@ -472,9 +462,9 @@ Severe: F1 = 0.52
 
 ## 7. Every category, and macro F1
 
-The same three counts for each category. If a forecaster never predicts a category, its precision would divide by zero, so it is set to 0.
+Same computation per category. Precision is set to 0 for a category that is never predicted (avoids division by zero).
 
-**Macro F1** is the plain average of the six F1 scores. Every category gets an equal vote, so rare Severe days count as much as common Satisfactory days.
+**Macro F1** = plain average of the six F1 scores, so rare Severe days weigh as much as common Satisfactory days.
 
 ```python
 def class_scores(actual, predicted):
@@ -591,9 +581,9 @@ print('Macro F1 (persistence):', round(macro_f1, 3))
 Macro F1 (persistence): 0.651
 ```
 
-## 8. Which lazy forecaster is the strongest?
+## 8. Comparing the four forecasters
 
-The same hand-made scorecard for all four, ordered as a ladder: each step uses more recent information than the one before.
+Same scorecard for all four, ordered by how recent the information each one uses.
 
 ```python
 def scorecard(name, actual, predicted):
@@ -679,12 +669,12 @@ results.round(3)
 </div>
 
 **Findings:**
-- **A (always Satisfactory)** is right on 35% of days, yet its macro F1 is only 0.086: it never catches a single bad day. This is why accuracy alone can fool us on imbalanced data.
-- **B (typical for city + month)** reaches 53% and is the best of all four at Very Poor (recall 0.78): in Delhi in winter, "Very Poor" is usually a good guess. But it never says Severe, because Severe is never the *typical* answer. This is a first hint that season information will help a model.
-- **D (category of the 7-day average)** reaches macro F1 0.544, well above the calendar (B) but clearly below today alone (C). Its weak spot is Severe: it catches only 8 of the 51 Severe days.
-- **C (persistence)** wins: 71% accuracy, **macro F1 0.651**, and it catches 27 of the 51 Severe days. Air pollution has memory (today's AQI correlates 0.86 with yesterday's), and persistence gets that memory for free.
+- **A (always Satisfactory)** is right on 35% of days, but its macro F1 is only 0.086: it never catches a bad day. Accuracy alone is misleading on imbalanced data.
+- **B (typical for city + month)** reaches 53% and is the best of the four at Very Poor (recall 0.78): in Delhi in winter, Very Poor is usually the right call. It never predicts Severe, because Severe is never the *typical* category; an early sign that season information will help a model.
+- **D (category of the 7-day average)** reaches macro F1 0.544, well above B but clearly below C. Weak on Severe: it catches only 8 of the 51 Severe days.
+- **C (persistence)** is best: 71% accuracy, **macro F1 0.651**, 27 of the 51 Severe days caught. AQI is strongly autocorrelated (today's AQI correlates 0.86 with yesterday's), which persistence exploits directly.
 
-**The ladder: what each kind of information is worth (macro F1)**
+**Macro F1 by information used:**
 
 ```
 A  always Satisfactory           0.086   knows nothing
@@ -697,11 +687,11 @@ C  persistence                   0.651   ◄── the bar
       │   ?     weather + trends + combining it all: the model's job
 ```
 
-**Decision: persistence is the baseline.** We always compare against the **strongest** simple rule. Beating A, B or D would prove very little.
+**Decision: persistence is the baseline.** Models are compared against the **strongest** simple rule; beating A, B or D would prove little.
 
-### Why does the week average lose to today alone?
+### Why the 7-day average loses to today alone
 
-Look at the 51 days that really turned out Severe, and what D forecast for them:
+The 51 days that were actually Severe, and what D forecast for them:
 
 ```python
 cm_week = confusion_table(val['actual'], val['week_average'])
@@ -730,9 +720,11 @@ Severe           8
 Name: what D forecast on the 51 Severe days, dtype: int64
 ```
 
-**Finding:** on the real Severe days, D mostly said **Very Poor** (37 of 51). An average mixes today with six older, usually calmer days, so it **smooths away the spikes**, and Severe days are spikes. It also reacts later than persistence (Delhi in section 3: 6 November instead of 3 November).
+**Finding:** on the real Severe days, D mostly forecast **Very Poor** (37 of 51): averaging today with six older, usually calmer days **smooths away spikes**, and Severe days are spikes. D also reacts later than persistence (Delhi in section 3: 6 November instead of 3 November).
 
-**What this means for the model:** the newest day carries the most information, so `aqi_today` stays the anchor feature. The weekly view is still useful **next to** it, not instead of it: that is exactly how the trend features (`aqi_roll7_std`, `aqi_dev7`) are used in the model.
+**Implication for the model:** the newest day carries the most information, so `aqi_today` stays the anchor feature; the weekly view is used **alongside** it, not instead of it, via the trend features (`aqi_roll7_std`, `aqi_dev7`).
+
+## 9. Where persistence goes wrong
 
 ```python
 changed = val['actual'] != val['persistence']        # the category is different tomorrow
@@ -747,7 +739,7 @@ Days that change category: 1478 of 5104 (29%)
 Persistence is right on every unchanged day and wrong on every changed day.
 ```
 
-How far off is it when it is wrong? Count the steps between the real and the forecast category (Good = 0 … Severe = 5):
+Distance between actual and forecast category on wrong days (Good = 0 … Severe = 5):
 
 ```python
 # How far off is persistence when it is wrong? Count the steps between the two categories.
@@ -765,7 +757,7 @@ distance[changed].value_counts().sort_index().rename('wrong days')
 Name: wrong days, dtype: int64
 ```
 
-And which way does the category move on those days? Rows are today's category; columns are how many steps worse (+) or better (−) tomorrow turned out:
+Direction of change on those days. Rows: today's category; columns: steps worse (+) or better (−) tomorrow:
 
 ```python
 # Which way does the category move on change days? (+1 = one category worse tomorrow)
@@ -859,17 +851,17 @@ pd.crosstab(val.loc[changed, 'persistence'], direction[changed],
 </div>
 
 **Findings:**
-- **29% of validation days change category** (1,478 of 5,104). Persistence gets all of them wrong, and all of the other 71% right.
-- **The mistakes are small:** 1,424 of the 1,478 wrong days (96%) are just **one step** off. Persistence never makes wild errors; it only misses the moves.
-- **Both directions happen.** From Very Poor, tomorrow was one step better on 85 days and one step worse (Severe) on 21 days. A model has to tell these apart from today's weather and the recent trend.
+- **29% of validation days change category** (1,478 of 5,104). Persistence is wrong on all of them and right on the other 71%.
+- **Errors are small:** 1,424 of the 1,478 wrong days (96%) are **one step** off. Persistence makes no large errors; it only misses transitions.
+- **Both directions occur.** From Very Poor, tomorrow was one step better on 85 days and one step worse (Severe) on 21 days. A model has to separate these using today's weather and the recent trend.
 
-So a good model must do two things at once:
-1. **Keep** the 71% of easy days right: it must not break what persistence already gets right.
-2. **Win** a share of the 29% change days, especially the jumps into Severe that persistence never sees coming.
+A model therefore has to:
+1. **Keep** the 71% of unchanged days right.
+2. **Win** a share of the 29% change days, especially the jumps into Severe that persistence cannot anticipate.
 
 ## 10. Check against scikit-learn
 
-The same numbers from `evaluate` in `utility.py`, which uses scikit-learn, for all four forecasters. If any metric differed, this cell would stop with an error.
+The same metrics from `evaluate` in `utility.py` (scikit-learn), for all four forecasters. The cell raises an assertion error if any metric differs.
 
 ```python
 # Cross-check: the hand-made numbers must match scikit-learn (utility.evaluate), for every forecaster
@@ -896,9 +888,9 @@ Hand calculation matches scikit-learn for every metric of all 4 forecasters.
 | Severe recall | 0.00 | 0.00 | 0.16 (8 of 51) | **0.53 (27 of 51)** |
 | Severe precision | 0.00 | 0.00 | 0.50 | **0.52** |
 
-The bar is **persistence**. It gets none of the 29% change days right, by definition.
+The bar is **persistence**, which by definition gets none of the 29% change days right.
 
 A model is worth keeping only if:
 1. **Macro F1 is clearly above 0.651.** A gain of a few thousandths is noise.
-2. **Severe recall rises without precision collapsing.** With only 51 Severe days, each day moves recall by about 2 points, so ignore differences of one or two days. A model that says "Severe" on hundreds of days is not better, even if it catches more.
+2. **Severe recall rises without precision collapsing.** With only 51 Severe days, each day moves recall by about 2 points, so differences of one or two days are not meaningful. Predicting "Severe" on hundreds of days is not an improvement, even if more are caught.
 3. **It gets a real share of the change days right**, the 29% where persistence is always wrong.

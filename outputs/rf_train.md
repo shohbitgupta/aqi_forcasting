@@ -2,16 +2,12 @@
 
 # Random Forest: Train and Compare
 
-**Why a forest?** The decision tree was the first model to beat persistence on 2023 (0.658 against 0.651), but two things showed it is fragile:
+**Motivation.** The decision tree was the first model to beat persistence on 2023 (0.658 against 0.651), but it is fragile:
 
 - its 2023 score **jumped by about 0.01** between neighbouring settings, more than its margin over persistence;
 - over **five years** it only **tied** with persistence (mean −0.003, ahead in 3 of 5 years).
 
-**The mental model: ask 200 forecasters and let them vote.** One forecaster who studied history very closely has learned some real patterns *and* some accidents of the past. Ask 200 forecasters who each studied a slightly different version of history: they agree on the real patterns, but each one's accidents are different, so in a vote the accidents cancel out. A random forest does exactly that with trees:
-
-1. **Every tree sees a different sample of the training days** (drawn with replacement, so some days twice, about a third not at all). This is called *bagging*.
-2. **At every question, a tree may only choose from a random part of the features** (`max_features`). Otherwise all 200 trees would ask the same first question about `aqi_today`, and they would make the same mistakes.
-3. **The forest's forecast is the vote of all trees.**
+A random forest reduces that variance by voting over many decorrelated trees. Each tree is trained on a bootstrap sample of the days (**bagging**; about a third of the days are left out of each sample), and each split chooses from a random subset of the features (`max_features`), so the 200 trees do not all split first on `aqi_today` and make the same errors.
 
 **The bar** (set in `dt_train.ipynb`, section 9): a model only counts as better if it beats persistence **on average over the five years 2019–2023 and in most of them**, not just in 2023.
 
@@ -68,7 +64,7 @@ train: 33543 | validation: 5104 | test: 9985
 
 ## 3. Features: the same raw columns as the decision tree
 
-A forest is made of trees, so it needs **no transforms** either (no scaling, no log, no month on a circle, no pressure relative to the city; reasons in `dt_train.ipynb`, section 3). It gets exactly the decision tree's features: all raw weather columns, all four trend features, the pollutant flags and `city`.
+No transforms (no scaling, no log, no month on a circle, no pressure relative to the city; reasons in `dt_train.ipynb`, section 3). The features are exactly the decision tree's: all raw weather columns, all four trend features, the pollutant flags and `city`.
 
 ```python
 TREE_NUMERIC = (['aqi_today'] + TREND +
@@ -98,14 +94,14 @@ print(f'{len(TREE_NUMERIC)} numeric + {len(TREE_BINARY)} yes/no + {len(TREE_CATE
 
 ## 4. The settings of a forest
 
-| Setting | Meaning | What it changes |
+| Setting | Meaning | Effect |
 |---|---|---|
-| `n_estimators` | How many trees vote | More trees → a steadier vote. More never overfits; it only costs time |
-| `max_features` | How many features a tree may choose from at each question (the 40 columns after one-hot encoding the city: `'sqrt'` = √40 ≈ 6, `0.33` = a third, `1.0` = all) | Fewer → more different trees, so their mistakes cancel better; too few → weak trees |
-| `min_samples_leaf` | How many training days every leaf must contain | The same as in the single tree, but a forest can afford much smaller leaves (section 5) |
-| `class_weight` | `None`, or `'balanced_subsample'`: rare categories count more, recomputed on each tree's own sample | Balanced lowers the bar for the rare categories (Very Poor, Severe) |
+| `n_estimators` | Number of trees | More trees → a steadier vote. Does not overfit; only costs time |
+| `max_features` | Features available at each split, out of the 40 columns after one-hot encoding the city (`'sqrt'` = √40 ≈ 6, `0.33` = a third, `1.0` = all) | Fewer → more decorrelated trees whose errors cancel better; too few → weak trees |
+| `min_samples_leaf` | Minimum training days per leaf | As in the single tree, but a forest tolerates much smaller leaves (section 5) |
+| `class_weight` | `None`, or `'balanced_subsample'`: rare categories weighted up, recomputed on each tree's own sample | Balanced lowers the bar for the rare categories (Very Poor, Severe) |
 
-`n_jobs=-1` trains the trees on all processor cores at once; `random_state=1` makes the random samples the same every run.
+`n_jobs=-1` trains on all processor cores; `random_state=1` fixes the random samples across runs.
 
 ```python
 def make_forest(min_samples_leaf=1, max_features='sqrt', class_weight=None, n_estimators=200):
@@ -122,9 +118,9 @@ def macro_f1(y_true, y_pred):
 
 ## 5. Two quick experiments
 
-### 5.1 Does voting stop the memorising?
+### 5.1 Effect of averaging trees on overfitting
 
-In `dt_train.ipynb` a tree without limits memorised the training years: **1.000** on training, only **0.513** on 2023. Here are 200 such trees (no depth limit, a leaf may hold a single day), voting:
+In `dt_train.ipynb` an unconstrained tree overfit the training years: **1.000** on training, only **0.513** on 2023. Below, 200 such trees (no depth limit, a leaf may hold a single day) are combined by vote:
 
 ```python
 free_forest = make_forest(min_samples_leaf=1).fit(X_train, y_train)
@@ -141,13 +137,11 @@ Macro F1 on training years: 1.000
 Macro F1 on 2023:           0.670   (one unlimited tree 0.513, persistence 0.651)
 ```
 
-**Voting fixes most of the memorising.** Every one of the 200 trees memorised its sample: the forest scores **1.000** on the training years, the same as the single unlimited tree. But on 2023 the forest scores **0.670** instead of 0.513, and already beats persistence.
+**Voting removes most of the overfitting.** Each of the 200 trees fits its sample perfectly (training score **1.000**, as for the single unconstrained tree), but on 2023 the forest scores **0.670** instead of 0.513, already above persistence: the trees overfit to *different* noise (different days and features), which cancels in the vote.
 
-Each tree memorised *different* accidents (it saw different days and different features), so in the vote the accidents cancel out and the shared, real patterns remain.
+**For a forest, a large train/validation gap is therefore not a warning sign by itself**; what matters is the score on unseen days and, later, on five years.
 
-**So for a forest, a big gap between training and validation is not a warning sign by itself.** What matters is the score on days the model has not seen, and later, on five years.
-
-### 5.2 How many trees are enough?
+### 5.2 Number of trees
 
 The same forest (at least 5 days per leaf) with 1 to 500 trees, scored on 2023:
 
@@ -208,10 +202,10 @@ trees_curve.round(3).to_frame().T
 </div>
 
 **Findings:**
-- **One tree is weak** (0.528): the same overfitting as before, made worse because it saw only a sample of the days.
-- **The score rises quickly** to 0.658 with 25 trees and passes persistence on the way.
-- **From about 100 trees on it is flat** (0.670–0.677). The small ups and downs (0.677 at 200, 0.671 at 300) are noise from the random samples, not a real difference.
-- **More trees never made it worse**, they only cost time. The forests below use **200 trees**.
+- **One tree is weak** (0.528): the same overfitting, made worse by training on a sample of the days.
+- **The score rises quickly** to 0.658 with 25 trees, passing persistence.
+- **Flat from about 100 trees** (0.670–0.677). The variation (0.677 at 200, 0.671 at 300) is sampling noise, not a real difference.
+- **More trees never hurt**, they only cost time. The forests below use **200 trees**.
 
 ## 6. Tuning on 2023
 
@@ -464,20 +458,20 @@ tuning.sort_values('val_macro_f1', ascending=False).head(10).round(3)
 </div>
 
 **Findings:**
-- **Almost every forest beats persistence on 2023.** All 24 forests with leaves of 1 to 20 days score from 0.652 to 0.679, against persistence's 0.651. Compare the single tree: only 4 of its 60 settings got above 0.651, all with exactly 100 days per leaf.
-- **The top is flat.** The 10 best forests are within **0.005** of each other (0.674–0.679). That is less than the year-to-year noise seen in rolling validation, so **2023 alone cannot pick the best setting**.
+- **Almost every forest beats persistence on 2023.** All 24 forests with leaves of 1 to 20 days score 0.652 to 0.679, against persistence's 0.651. Only 4 of the single tree's 60 settings got above 0.651, all with exactly 100 days per leaf.
+- **The top is flat.** The 10 best forests are within **0.005** of each other (0.674–0.679), less than the year-to-year noise seen in rolling validation, so **2023 alone cannot pick the best setting**.
 - **Leaves of 50 days are too coarse,** especially with balanced weights (0.632–0.642).
-- **Balanced weights tie with no weights at the top** (both 0.679), but say "Severe" much more often (66 times against 40, with 51 real Severe days).
+- **Balanced weights tie with no weights at the top** (both 0.679), but predict "Severe" much more often (66 times against 40, with 51 real Severe days).
 
-Because 2023 cannot separate the top settings, the next step lets five years choose among them.
+Section 7 uses five years to choose among the top settings.
 
 ## 7. Let five years choose
 
-The shortlist: the **3 best settings of each weighting** on 2023. Each one goes through rolling validation (learn from the years before, score one year, for 2019 to 2023), together with the decision tree from `dt_best.bin` for reference. The test years 2024–2025 stay locked.
+Shortlist: the **3 best settings of each weighting** on 2023. Each goes through rolling validation (train on the years before, score one year, for 2019 to 2023), with the decision tree from `dt_best.bin` as reference. The test years 2024–2025 stay locked.
 
 `rolling_summary` in `utility.py` applies the bar: `passes_bar` is true only if a model beats persistence on the five-year average **and** in most of the years.
 
-**How the forest is chosen:** among the forests that pass, take those within 0.002 of the best five-year average (closer than that is noise). Of those, prefer the one ahead of persistence in more years, then the one with the smaller training gap.
+**Selection rule:** among the forests that pass, keep those within 0.002 of the best five-year average (smaller differences are noise). Of those, prefer more years ahead of persistence, then the smaller training gap.
 
 ```python
 with open(MODEL_DIR / 'dt_best.bin', 'rb') as f:        # saved by dt_train.ipynb, section 10
@@ -813,14 +807,14 @@ plt.show()
 
 **Findings:**
 - **The random forest is the first model to pass the bar.** All 6 shortlisted forests beat persistence on the five-year average (+0.009 to +0.030), in at least 4 of the 5 years. The decision tree, run the same way, does not (−0.003, 3 of 5 years).
-- **The chosen forest** (balanced weights, `max_features` 0.5, at least 5 days per leaf) averages **0.664** against persistence's **0.634** (+0.030) and is **ahead in all 5 years**, including **2022** (+0.020), the year every earlier model lost. Its score also moves the least from year to year (spread 0.027).
-- **Five years changed the decision about class weights.** On 2023, balanced and no weights tied (0.679 each). Over five years, balanced wins by **+0.012** (0.664 against 0.652), mostly in the harder years 2019 and 2022 (2022: 0.639 against 0.598–0.608).
-- **Why do balanced weights help here when they hurt logistic regression and the single tree?** A likely reason: in logistic regression, the weights moved one bar for "Severe" on *every* day. In a forest, they only change the votes inside each tree's small leaves, and 200 trees then average those votes, so the rare categories get more say without a flood of rare forecasts. The general lesson: **a decision like class weights has to be re-checked for every model type, on five years.**
-- **The training gap is large** (0.23), but as section 5.1 showed, that is normal for a forest; the five-year scores show it works on years it has not seen.
+- **Chosen forest** (balanced weights, `max_features` 0.5, at least 5 days per leaf): **0.664** against persistence's **0.634** (+0.030), **ahead in all 5 years**, including **2022** (+0.020), the year every earlier model lost. It also has the smallest year-to-year spread (0.027).
+- **Five years changed the class-weight decision.** On 2023, balanced and no weights tied (0.679 each). Over five years, balanced wins by **+0.012** (0.664 against 0.652), mostly in the harder years 2019 and 2022 (2022: 0.639 against 0.598–0.608).
+- **Likely reason balanced weights help here but hurt logistic regression and the single tree:** in logistic regression they moved the bar for "Severe" on *every* day; in a forest they only shift the votes inside each tree's small leaves, which 200 trees then average, so the rare categories gain weight without a flood of rare forecasts. **Class weighting has to be re-checked for every model type, on five years.**
+- **The training gap is large** (0.23), but as section 5.1 showed, that is expected for a forest; the five-year scores show it generalises.
 
 ## 8. Compare on 2023: persistence vs logistic regression vs decision tree vs random forest
 
-The chosen forest is trained once more on 2015–2022 and scored on 2023 with the same scorecard as every other model. Logistic regression and the decision tree come from their saved bundles.
+The chosen forest is retrained on 2015–2022 and scored on 2023 with the same scorecard as every other model. Logistic regression and the decision tree are loaded from their saved bundles.
 
 ```python
 forest = make_forest(chosen['min_samples_leaf'], chosen['max_features'], WEIGHTS[chosen['weights']]).fit(X_train, y_train)
@@ -1156,15 +1150,15 @@ pd.DataFrame(confusion_matrix(y_val, pred_forest, labels=AQI_CATEGORIES),
 | Change days right | 0% | **35.3%** | 27.8% | 26.8% |
 | Unchanged days right | **100%** | 88.3% | 90.4% | 92.4% |
 
-- **The forest is the best model on 2023 on the main scores:** macro F1 0.679 (+0.028 over persistence) and accuracy 73.4%.
-- **The best Dangerous alert so far:** it warns on **84%** of Very Poor and Severe days (logistic regression 81%, persistence 75%), and is right **76%** of the time it warns, as precise as logistic regression.
-- **It catches the most Severe days (31 of 51), but raises the most Severe false alarms (35).** When it says "Severe", it is right only 47% of the time. That is the price of balanced weights. But look at the confusion matrix: **30 of the 35 false alarms were Very Poor days**, which are dangerous days too. Only 5 were Poor days.
-- **It is better at the rare ends:** Good F1 0.66 and Poor F1 0.63, the best of all four models.
-- **Change days remain hard:** 26.8% right, below logistic regression (35.3%). The forest's gain comes from more unchanged days right (92.4%) and from the rare categories.
+- **Best model on 2023 on the main scores:** macro F1 0.679 (+0.028 over persistence), accuracy 73.4%.
+- **Best Dangerous alert so far:** warns on **84%** of Very Poor and Severe days (logistic regression 81%, persistence 75%) at **76%** precision, matching logistic regression.
+- **Most Severe days caught (31 of 51), but also the most Severe false alarms (35):** Severe precision is only 47%, the cost of balanced weights. Per the confusion matrix, **30 of the 35 false alarms were Very Poor days**, also dangerous; only 5 were Poor days.
+- **Better at the rare ends:** Good F1 0.66 and Poor F1 0.63, the best of all four models.
+- **Change days remain hard:** 26.8% right, below logistic regression (35.3%). The gain comes from unchanged days (92.4%) and the rare categories.
 
-## 9. What did the forest learn?
+## 9. Feature importance
 
-Feature importance of the forest next to the single tree's. Both say how much each feature reduced the mistakes, as a share of the total; the forest's is the average over its 200 trees.
+The forest's feature importance next to the single tree's: each feature's share of the total reduction in mistakes; for the forest, averaged over its 200 trees.
 
 ```python
 importance = pd.DataFrame({
@@ -1253,8 +1247,8 @@ importance.sort_values('random forest', ascending=False).head(12).round(3)
 </div>
 
 **Findings:**
-- **`aqi_today` still matters most, but it does 37% of the work instead of 83%.** With `max_features` 0.5, half of the time a tree is not allowed to ask about `aqi_today`, so it must find the next-best signals. The forest therefore also learned them: the **weekly average** (`aqi_roll7_mean`, 17%), the **day's temperature range** (`temp_range`, 5%: a large range often means clear, calm nights that trap pollution near the ground), **wind** and **humidity**.
-- **Importance is not the same as cause.** Features that carry similar information (the four temperature columns, the trend features) share their importance, so a single small number does not mean a feature is useless.
+- **`aqi_today` still matters most, but with 37% of the importance instead of 83%.** With `max_features` 0.5, `aqi_today` is unavailable at about half of the splits, so the trees also learn the next-best signals: the **weekly average** (`aqi_roll7_mean`, 17%), the **daily temperature range** (`temp_range`, 5%; a large range often indicates clear, calm nights that trap pollution near the ground), **wind** and **humidity**.
+- **Importance is not causation.** Correlated features (the four temperature columns, the trend features) share their importance, so a small value does not mean a feature is useless.
 
 ## 10. Save the model
 
@@ -1287,10 +1281,10 @@ Saved and verified: /Users/sshobhitggupta/Documents/datatalk_ml_zoomchamp/midter
 
 ## Discussion
 
-1. **The random forest is the first model to pass the bar.** Over 2019–2023 it averages **0.664** against persistence's **0.634**, and it is ahead in **all five years**, including 2022, where every earlier model lost.
-2. **Voting fixes the single tree's main weakness.** 200 unlimited trees memorise as much as one (training 1.000), but their vote scores 0.670 on 2023 instead of 0.513. And almost every forest setting beats persistence on 2023, while only 4 of 60 single-tree settings did.
-3. **One year could not choose the setting; five years could.** The 10 best forests on 2023 were within 0.005. Over five years, balanced class weights were clearly better (+0.012), a decision that 2023 alone would have missed.
-4. **On 2023 the forest is the best model on macro F1 (0.679), accuracy (73.4%) and the Dangerous alert (84% caught, 76% right).** The trade-off is Severe: it catches the most Severe days (31 of 51) but also raises the most Severe false alarms (35, of which 30 were Very Poor days). The planned **Severe threshold** step can tune that balance.
-5. **The cost: a 114 MB model file.** That is above GitHub's 100 MB limit, so `experiments/models/*.bin` should not be committed. `train.py` will rebuild the model from the data.
+1. **The random forest is the first model to pass the bar.** Over 2019–2023 it averages **0.664** against persistence's **0.634**, ahead in **all five years**, including 2022, where every earlier model lost.
+2. **Voting fixes the single tree's main weakness.** 200 unconstrained trees fit the training data as fully as one (training 1.000), but their vote scores 0.670 on 2023 instead of 0.513. Almost every forest setting beats persistence on 2023, against 4 of 60 single-tree settings.
+3. **One year could not choose the setting; five years could.** The 10 best forests on 2023 were within 0.005. Over five years, balanced class weights were clearly better (+0.012), which 2023 alone would have missed.
+4. **On 2023 the forest is best on macro F1 (0.679), accuracy (73.4%) and the Dangerous alert (84% caught, 76% right).** The trade-off is Severe: the most Severe days caught (31 of 51), but also the most Severe false alarms (35, of which 30 were Very Poor days). The planned **Severe threshold** step can tune that balance.
+5. **Cost: a 114 MB model file**, above GitHub's 100 MB limit, so `experiments/models/*.bin` should not be committed. `train.py` will rebuild the model from the data.
 
-**Next: XGBoost** (`xgb_train.ipynb`). It has to pass the same bar and is compared with this forest's five-year average of 0.664.
+**Next: XGBoost** (`xgb_train.ipynb`), held to the same bar and compared with this forest's five-year average of 0.664.

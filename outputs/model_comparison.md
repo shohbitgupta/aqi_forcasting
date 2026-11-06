@@ -2,9 +2,7 @@
 
 # Model Comparison: ROC AUC for Every Experiment
 
-**Why another score?** Macro F1 judges the **final category** each model picks. But every model first gives a **probability for each category** and then picks the highest one. Two models can pick the same category while one of them was much surer for the right reasons. **ROC AUC judges those probabilities.**
-
-**The mental model: a ranking test.** Take one day that really was Severe and one day that was not. Ask the model: "which of these two days is more likely to be Severe?" **AUC is how often it ranks the real Severe day higher**, over all such pairs.
+Macro F1 scores the **final category** each model picks. **ROC AUC scores the probabilities** behind it: for one category, the share of (real Severe day, other day) pairs in which the real Severe day gets the higher probability.
 
 | AUC | Meaning |
 |---|---|
@@ -14,13 +12,12 @@
 | above 0.9 | Very good ranking |
 | 1.0 | Every Severe day ranked above every other day |
 
-**Why it matters for us:**
-- AUC does **not** depend on a threshold. Macro F1 uses "pick the highest probability"; AUC judges the probabilities **before** that choice. A high Severe AUC means a good **Severe threshold** exists, which is the next planned step.
-- It is computed **one category against the rest** (6 scores), plus their average (**macro AUC**) and the **Dangerous** alert (probability of Very Poor + Severe).
+- AUC is **threshold-free**: a high Severe AUC means a good **Severe threshold** exists (the next planned step).
+- Computed **one category against the rest** (6 scores), plus their average (**macro AUC**) and the **Dangerous** alert (probability of Very Poor + Severe).
 
-**Persistence has no probabilities**: it says 100% for today's category and 0% for the rest. So it gets one point on the ROC curve instead of a full curve, and its AUC is only (recall + share of other days correctly left out) / 2. It is shown as a reference, but **only the learned models can be compared fairly with each other**.
+**Persistence has no probabilities** (100% for today's category, 0% for the rest): it is a single ROC point with AUC = (recall + share of other days correctly left out) / 2, shown for reference only. **Only the learned models can be compared fairly with each other.**
 
-**This notebook** loads every saved experiment, in the order we built them, and shows **where each step improved** (section 4), on 2023 and, like every decision now, on **five years** (section 6).
+This notebook loads every saved experiment in build order and shows **where each step improved** (section 4), on 2023 and on **five years** (section 6).
 
 Run `lr_train_baseline.ipynb`, `dt_train.ipynb`, `rf_train.ipynb` and `xgb_train.ipynb` first: this notebook only loads their saved models.
 
@@ -255,7 +252,7 @@ auc.round(3)
 </table>
 </div>
 
-**What each step added:** every row is that experiment's AUC **minus the step before it** (positive = improved). Step 1 is compared with persistence.
+**Change per step:** each row is that experiment's AUC **minus the previous step's** (positive = improved). Step 1 is compared with persistence.
 
 ```python
 change = auc.diff().iloc[1:]
@@ -372,18 +369,18 @@ plt.show()
 ![chart](model_comparison_files/model_comparison_11_1.png)
 
 **Findings:**
-- **The big jump is from persistence to any learned model** (macro AUC 0.793 → 0.930). Most of it comes from having probabilities at all: persistence can only say yes or no. The fair comparison is between the learned models.
-- **All learned models rank the days well, and close together:** macro AUC 0.930 to 0.945. Between experiments, AUC moves by at most 0.017; macro F1 moved far more (0.598 to 0.679).
-- **Step 2, removing class weights: macro AUC +0.009, but Severe unchanged (−0.001).** The weights barely changed how well the days are **ordered**; they changed **where the bar is set** for saying "Severe" (the "lowered bar" from `lr_train_baseline.ipynb`). That is why macro F1 jumped (0.598 → 0.647) while AUC hardly moved.
-- **Step 3, tuning C: no change at all.** Tuning chose C = 1, the default, so it is the same model as step 2.
-- **Step 4, the decision tree: the best Severe ranking (0.986, +0.011) but worse on Very Poor (−0.009) and Dangerous (−0.007).** Every day in a tree leaf (at least 100 days) gets the same probabilities, so a tree ranks days only coarsely. Overall, no gain (macro −0.000).
-- **Step 5, the random forest: better on 7 of the 8 columns** (macro +0.004). Only Severe falls back (0.976, the same as logistic regression).
-- **Step 6, XGBoost: small gains on almost every column,** and the **best macro AUC** (0.945).
-- **Macro F1 and AUC disagree on the top two.** The forest has the better macro F1 (0.679 against 0.668); XGBoost has the better AUC (0.945 against 0.943). XGBoost **ranks** days slightly better; the forest **picks** better categories in the end, helped by its balanced weights, which move the bar towards the rare categories.
+- **The big jump is from persistence to any learned model** (macro AUC 0.793 → 0.930), mostly because persistence only says yes or no. The fair comparison is between the learned models.
+- **All learned models rank the days well, and close together:** macro AUC 0.930 to 0.945. Between experiments AUC moves by at most 0.017; macro F1 moved far more (0.598 to 0.679).
+- **Step 2, removing class weights: macro AUC +0.009, Severe unchanged (−0.001).** The weights barely changed how the days are **ordered**; they changed **where the bar is set** for saying "Severe" (the "lowered bar" from `lr_train_baseline.ipynb`). Hence macro F1 jumped (0.598 → 0.647) while AUC hardly moved.
+- **Step 3, tuning C: no change.** Tuning chose C = 1, the default, so it is the same model as step 2.
+- **Step 4, decision tree: best Severe ranking (0.986, +0.011), worse on Very Poor (−0.009) and Dangerous (−0.007).** All days in a leaf (at least 100 days) get the same probabilities, so the ranking is coarse. Overall no gain (macro −0.000).
+- **Step 5, random forest: better on 7 of the 8 columns** (macro +0.004). Only Severe falls back (0.976, the same as logistic regression).
+- **Step 6, XGBoost: small gains on almost every column** and the **best macro AUC** (0.945).
+- **Macro F1 and AUC disagree on the top two.** The forest has the better macro F1 (0.679 against 0.668), XGBoost the better AUC (0.945 against 0.943). XGBoost **ranks** days slightly better; the forest **picks** better final categories, helped by balanced weights that move the bar towards the rare categories.
 
 ## 5. ROC curves: Severe and Dangerous
 
-A ROC curve shows every possible threshold at once. Going right means more false alarms (share of other days wrongly flagged); going up means more real days caught. **The higher and further left the curve, the better.** Persistence is a single point, because it has only one setting.
+Each curve covers every threshold. x-axis: false-alarm rate (share of other days wrongly flagged); y-axis: share of real days caught. **Higher and further left is better.** Persistence is a single point (it has only one setting).
 
 ```python
 fig, axes = plt.subplots(1, 2, figsize=(13, 5.5))
@@ -410,14 +407,14 @@ plt.show()
 ![chart](model_comparison_files/model_comparison_14_2.png)
 
 **Findings:**
-- **Severe: at persistence's own false-alarm level, the models do not catch more.** Persistence raised 25 false alarms in 2023 (0.5% of the other days) and caught 53% of the Severe days. At the same false-alarm level, the models catch 45% to 57%.
-- **The models' advantage on Severe is choice.** Accept about 50 false alarms in the year (1% of other days) and the forest catches 67% and XGBoost 69%; accept about 100 (2%) and they catch 78% to 82%. Persistence has no such setting. With only 51 Severe days, every step in these curves is a single day.
+- **Severe: at persistence's own false-alarm level, the models do not catch more.** Persistence raised 25 false alarms in 2023 (0.5% of the other days) and caught 53% of the Severe days; at the same false-alarm level the models catch 45% to 57%.
+- **The models' advantage on Severe is a choice of operating point:** at about 50 false alarms a year (1% of other days) the forest catches 67% and XGBoost 69%; at about 100 (2%), 78% to 82%. Persistence has no such setting. With only 51 Severe days, each step in these curves is one day.
 - **Dangerous: a real gain at no extra cost.** At persistence's false-alarm level (103 false alarms, 2.2% of other days), the forest and XGBoost catch **82%** of the Dangerous days against persistence's **75%** (logistic regression 80%, the tree 73%).
-- **So the Severe threshold step is a decision about how many false alarms are acceptable for each extra Severe day caught,** not a purely technical one.
+- **The Severe threshold step is therefore a decision about how many false alarms are acceptable per extra Severe day caught,** not a purely technical one.
 
-## 6. Five years: does the AUC ranking hold?
+## 6. Five years: stability of the AUC ranking
 
-The same rule as before: one year can mislead. Every experiment is retrained in each round of rolling validation (learn from the years before, score 2019 to 2023) with exactly its saved settings (`clone` copies the settings without the learned trees or weights). `rolling_validation` now also records macro AUC whenever a model gives probabilities. About 3 minutes.
+As before, one year can mislead. Each experiment is retrained in every round of rolling validation (train on the years before, score 2019 to 2023) with exactly its saved settings (`clone` copies the settings without the learned trees or weights). `rolling_validation` now also records macro AUC whenever a model gives probabilities. About 3 minutes.
 
 ```python
 df_dev = pd.concat([df_train, df_val])                   # 2015-2023 only; the test years stay locked
@@ -638,10 +635,10 @@ plt.show()
 ![chart](model_comparison_files/model_comparison_20_3.png)
 
 **Findings:**
-- **The ranking holds over five years.** XGBoost has the highest macro AUC in **every one** of the five years (mean **0.942**), and the random forest is second in every year (mean **0.940**).
-- **The forest is the biggest step between learned models** (+0.010 over the tree's five-year average). On 2023 alone it looked like +0.004.
-- **The decision tree ranks below the unweighted logistic regression** (0.930 against 0.935), the opposite of macro F1 (tree 0.631, logistic regression 0.613). Again: its probabilities are coarse. Only the balanced logistic regression ranks lower (0.929).
-- **Removing class weights helps logistic regression's ranking in every year** (+0.006 on average), the same as on 2023.
+- **The ranking holds over five years.** XGBoost has the highest macro AUC in **every one** of the five years (mean **0.942**); the random forest is second in every year (mean **0.940**).
+- **The forest is the biggest step between learned models** (+0.010 over the tree's five-year average); 2023 alone showed +0.004.
+- **The decision tree ranks below unweighted logistic regression** (0.930 against 0.935), the opposite of macro F1 (tree 0.631, logistic regression 0.613), again because its probabilities are coarse. Only balanced logistic regression ranks lower (0.929).
+- **Removing class weights improves logistic regression's ranking in every year** (+0.006 on average), as on 2023.
 - **AUC is steadier than macro F1.** Every learned model's AUC moves by about 0.02 or less between years, and XGBoost and the forest are the top two in every year. Macro F1 depends more on where the bar happens to fall in each year.
 
 ## Discussion
@@ -659,7 +656,7 @@ plt.show()
 | 6. XGBoost | −0.009 | +0.002 | Best ranking in every year, but slightly worse final picks than the forest |
 
 1. **Both scores agree on the leaders:** the random forest and XGBoost are the two best models, on 2023 and over five years.
-2. **They disagree on the order.** XGBoost ranks the days slightly better (AUC); the forest picks the final category better (macro F1). The gap is small in both cases.
-3. **All learned models rank days well (AUC above 0.93); the bigger differences come from where the bar is set.** Class weights changed macro F1 a lot and AUC hardly at all. So the next step, **tuning the Severe threshold**, can matter more than another model type. It should be tried on **both** the forest and XGBoost, and judged on five years.
-4. **For Severe, the models catch more days only by accepting more false alarms.** At persistence's false-alarm level, no model catches more Severe days. For the **Dangerous** alert, the forest and XGBoost catch more (82% against 75%) **with the same number of false alarms**.
-5. **For management:** the forecast already gives a better health warning than "tomorrow = today" at no extra cost. For the rarest category, Severe, the team has to decide how many false alarms are acceptable for each extra Severe day caught.
+2. **They disagree on the order.** XGBoost ranks days slightly better (AUC); the forest picks the final category better (macro F1). Both gaps are small.
+3. **All learned models rank days well (AUC above 0.93); the larger differences come from where the bar is set.** Class weights changed macro F1 a lot and AUC hardly at all, so the next step, **tuning the Severe threshold**, can matter more than another model type. It should be tried on **both** the forest and XGBoost and judged on five years.
+4. **Severe: more days caught only with more false alarms.** At persistence's false-alarm level no model catches more Severe days. For the **Dangerous** alert, the forest and XGBoost catch more (82% against 75%) **with the same number of false alarms**.
+5. **For management:** the forecast already gives a better health warning than "tomorrow = today" at no extra cost. For Severe, the rarest category, the team has to decide how many false alarms are acceptable per extra Severe day caught.

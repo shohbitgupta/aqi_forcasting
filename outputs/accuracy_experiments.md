@@ -1,10 +1,10 @@
 <!-- Exported from experiments/accuracy_experiments.ipynb: every cell run top to bottom; generated, do not edit by hand -->
 
-# Accuracy Experiments: Can We Forecast the Right Category More Often?
+# Accuracy Experiments: Improving Category Accuracy
 
-**The goal of this notebook is overall accuracy**: how often the forecast category is the one CPCB reports the next day. The final model (`scripts/train.py`) is right on 75% of 2025 days; "tomorrow = today" (persistence) on about 73%. In the live weeks of October 2026 the model was close to persistence outside the NCR.
+**Goal: overall accuracy**, i.e. how often the forecast category matches the one CPCB reports the next day. The final model (`scripts/train.py`) is right on 75% of 2025 days; persistence ("tomorrow = today") on about 73%. In the live weeks of October 2026 the model was close to persistence outside the NCR.
 
-**Two ideas are tested, plus two diagnostics:**
+**Two ideas and two diagnostics:**
 
 | # | Idea | Why it might help |
 |---|---|---|
@@ -13,11 +13,11 @@
 | diag | **AQI 2 and 3 days ago** | a longer memory of the trend |
 | diag | **Perfect tomorrow's weather** (the weather that really happened) | **cannot be deployed**: it only shows the most any weather forecast could add |
 
-**The rules stay the same as for every model so far:**
-- choose with **rolling validation on 2019-2023**: each year is forecast by a model that learned only from the years before it;
+**Rules, as for every model so far:**
+- select with **rolling validation on 2019-2023**: each year is forecast by a model trained only on the years before it;
 - the test year **2025 is scored once**, after the choice;
-- always next to **persistence**, and with accuracy split into **days the category changed** and **steady days**;
-- one more check no model has seen: **31 live days in October 2026**, built from the CPCB bulletins exactly as the web service does.
+- always next to **persistence**, with accuracy split into **days the category changed** and **steady days**;
+- one extra unseen check: **31 live days in October 2026**, built from the CPCB bulletins exactly as the web service does.
 
 ## 1. Setup
 
@@ -47,10 +47,10 @@ NORTH = ['Lucknow', 'Kanpur', 'Patna']
 
 ## 2. The data, and three extra columns
 
-The same rows as every model (`train.load_data`). Three columns are added, only for this notebook:
+Same rows as every model (`train.load_data`), plus three columns used only in this notebook:
 - **`tomorrow_aqi`**: the next day's AQI **number**, the target of idea 2. `tomorrow_status` was made from it, so the two must agree on every row;
 - **`aqi_lag2`, `aqi_lag3`**: the AQI 2 and 3 days earlier (diagnostic);
-- **`next_*`**: the next day's measured weather (the ceiling diagnostic only).
+- **`next_*`**: the next day's measured weather (ceiling diagnostic only).
 
 
 ```python
@@ -77,13 +77,13 @@ print(f'{len(df):,} rows; tomorrow_aqi agrees with tomorrow_status on {agree:.2%
 
 ## 3. The candidates
 
-Every candidate uses the final model's settings (`train.PARAMS`: depth 3, 628 trees, learning rate 0.05), so only the idea changes.
+All candidates use the final model's settings (`train.PARAMS`: depth 3, 628 trees, learning rate 0.05), so only the idea changes.
 
-- **current**: the final model as it is.
-- **recent_3 / recent_6**: the same model, with each training day weighted `0.5 ** (years back / half-life)`. With a half-life of 3 years, a day from 3 years before the last training year counts half as much.
-- **aqi_number**: an XGBoost **regressor** forecasts tomorrow's AQI **change** (tomorrow minus today), the forecast number is today's AQI plus that change, and the category comes from CPCB's bands. Forecasting the change rather than the level lets the trees spend their splits on what moves.
+- **current**: the final model as is.
+- **recent_3 / recent_6**: the same model, each training day weighted `0.5 ** (years back / half-life)`. With a half-life of 3 years, a day 3 years before the last training year counts half.
+- **aqi_number**: an XGBoost **regressor** forecasts tomorrow's AQI **change** (tomorrow minus today); the forecast number is today's AQI plus that change, and the category comes from CPCB's bands. Forecasting the change rather than the level lets the trees spend their splits on what moves.
 - **aqi_number_3**: the same, with recent years weighted (half-life 3).
-- **lags** and **perfect_weather** are the diagnostics.
+- **lags** and **perfect_weather**: the diagnostics.
 
 
 ```python
@@ -124,7 +124,7 @@ CANDIDATES = ['current', 'recent_3', 'recent_6', 'aqi_number', 'aqi_number_3', '
 
 ## 4. Rolling validation, 2019-2023
 
-Each year is forecast by models that learned only from the years before it, so every score imitates real use. This takes a few minutes (7 candidates x 5 years).
+Each year is forecast by models trained only on the years before it, mimicking real use. A few minutes (7 candidates x 5 years).
 
 
 ```python
@@ -371,17 +371,17 @@ summary.round(3)
 
 
 
-**Reading the table:**
+**Findings:**
 - **Recency weights** add about **0.2 points**, better than the current model in 4 of 5 years, but by a margin too small to matter.
-- **Forecasting the AQI number** catches **more changes** (about 33% instead of 30%) but makes **more mistakes on steady days**, and the two cancel out: overall it is slightly worse. Its typical AQI error is about 24 points.
-- **AQI 2-3 days ago** adds nothing: the 7-day features already hold that memory.
-- **Perfect tomorrow's weather** adds only about **1 point**, in every year. That is the **ceiling** for adding weather forecasts: real forecasts are less accurate than the weather that really happened, so they would add less.
+- **Forecasting the AQI number** catches **more changes** (about 33% instead of 30%) but makes **more mistakes on steady days**; net, slightly worse. Its typical AQI error is about 24 points.
+- **AQI 2-3 days ago** adds nothing: the 7-day features already carry that history.
+- **Perfect tomorrow's weather** adds only about **1 point**, in every year. That is the **ceiling** for adding weather forecasts: real forecasts are less accurate than the observed weather, so they would add less.
 
-So none of the deployable ideas moves overall accuracy by more than a fraction of a point. The next section shows why.
+None of the deployable ideas moves overall accuracy by more than a fraction of a point; section 5 looks at why.
 
 ## 5. Why accuracy stops in the low 70s
 
-A category is a band of AQI (Satisfactory is 51-100, Moderate 101-200, ...). A natural guess is that the misses are the days when tomorrow's AQI lands close to a band's edge. The next cell checks that guess against the current model's misses in 2019-2023.
+A category is a band of AQI (Satisfactory is 51-100, Moderate 101-200, ...). Hypothesis: misses concentrate on days when tomorrow's AQI lands close to a band's edge. The next cell tests this on the current model's misses in 2019-2023.
 
 
 ```python
@@ -400,9 +400,9 @@ for d in (10, 20, 30):
     misses where tomorrow's AQI was within 30 points of a category edge: 76%   (all days: 77%)
 
 
-**The guess is wrong:** misses are no closer to an edge than days in general (32% of misses are within 10 points of one, and so are 32% of all days). The edges are not the special cause: the forecast is simply uncertain on many days.
+**Hypothesis rejected:** misses are no closer to an edge than days in general (32% of misses are within 10 points of one, and so are 32% of all days). The forecast is simply uncertain on many days.
 
-A thought experiment shows how much certainty a category forecast needs: suppose a forecaster knew tomorrow's AQI **number** with a typical error of *e* points. How often would its category be right?
+The next cell computes how often the category would be right if tomorrow's AQI **number** were known with a typical error of *e* points.
 
 
 ```python
@@ -422,7 +422,7 @@ for e in (5, 10, 15, 20, 25):
     AQI number known to within about 25 points  ->  category right on 69% of days
 
 
-Our number model is off by **about 24 points** on a typical day (section 4), and a forecaster that far off gets the category right on about **70%** of days, which is where every candidate lands. **To reach 85%, tomorrow's AQI would have to be known to within about 10 points**: far more than yesterday's AQI, the past week and the weather can tell. The limit is how much tomorrow's AQI moves for reasons these inputs do not see, not the choice of model.
+The number model is off by **about 24 points** on a typical day (section 4); at that error the category is right on about **70%** of days, which is where every candidate lands. **Reaching 85% would require tomorrow's AQI to within about 10 points**, far more than yesterday's AQI, the past week and the weather can tell. The limit is how much tomorrow's AQI moves for reasons these inputs do not see, not the choice of model.
 
 ## 6. The test year 2025, scored once
 
@@ -573,9 +573,9 @@ pd.DataFrame({name: pd.Series(pred == y_test).groupby(region).mean()
 
 ## 7. Live October 2026: days no model has seen
 
-The inputs for 3 October to 2 November 2026 were built from the CPCB bulletin PDFs and Open-Meteo exactly as the web service builds them (`scripts/live_data.py`), with the next day's CPCB AQI as the answer. If the file is missing, the next cell rebuilds it: about 40 bulletins, and one weather request per city for the whole month (the daily values are the same as the service's one-day requests, since the hourly data is averaged per date).
+The inputs for 3 October to 2 November 2026 were built from the CPCB bulletin PDFs and Open-Meteo exactly as the web service builds them (`scripts/live_data.py`), with the next day's CPCB AQI as the answer. If the file is missing, the next cell rebuilds it: about 40 bulletins and one weather request per city for the whole month (the daily values match the service's one-day requests, since the hourly data is averaged per date).
 
-Here a candidate can also learn from **2025**, which is what a model retrained today would do.
+Here a candidate can also train on **2025**, as a model retrained today would.
 
 
 ```python
@@ -756,17 +756,17 @@ print(summary[['accuracy', 'vs current', 'on change days', 'on steady days']].ro
 | recent years weighted, **retrained with 2025** | - | - | **73.0%** |
 
 **Conclusions**
-1. **Weighting recent years helps a little, every time it was measured**: +0.2 points in validation (better in 4 of 5 years), +0.7 on 2025 (NCR +1.2), +0.9 on the live days. Half-lives of 3 and 6 years are tied in validation; 3 was chosen before the test.
-2. **Learning from 2025 too** adds about another point on the live days. Together with recency weights: **73.0% instead of 71.4%** on October 2026, and 3.9 points above persistence.
+1. **Weighting recent years helps slightly, every time it was measured**: +0.2 points in validation (better in 4 of 5 years), +0.7 on 2025 (NCR +1.2), +0.9 on the live days. Half-lives of 3 and 6 years tie in validation; 3 was chosen before the test.
+2. **Also training on 2025** adds about another point on the live days. With recency weights: **73.0% instead of 71.4%** on October 2026, 3.9 points above persistence.
 3. **Forecasting the AQI number does not raise category accuracy**: it catches more changes but misses more steady days. Its number (typical error 20-24 points) could still be shown in the app next to the category, as a separate decision.
 4. **A longer AQI memory adds nothing**, and **even perfect knowledge of tomorrow's weather would add only about 1 point**, so adding weather forecasts is not worth the effort for overall accuracy.
 5. **The ceiling is the data, not the model** (section 5): with these inputs tomorrow's AQI cannot be known to much better than about 20 points, which caps category accuracy in the low-to-mid 70s.
 
-**Next step:** retrain the final model on **2015-2025 with recent years weighted (half-life 3)**. The expected gain is modest, about +0.5 to +1.5 points, and the change is small: `train.py` gains the weights and one more training year, and nothing changes in the service's inputs. With 2025 in training there is no unseen test year left, so the live checks (the web service's daily `check`) become the test.
+**Next step:** retrain the final model on **2015-2025 with recent years weighted (half-life 3)**. Expected gain is modest (about +0.5 to +1.5 points) and the change is small: `train.py` gains the weights and one more training year; nothing changes in the service's inputs. With 2025 in training no unseen test year is left, so the live checks (the web service's daily `check`) become the test.
 
 ## 9. Why Poor, Very Poor and Severe get confused
 
-The model mixes up the three high categories most (2025: 63% of Poor days, 71% of Very Poor and 58% of Severe are caught). Four causes are possible, and each can be tested:
+The three high categories are confused most (2025: 63% of Poor days, 71% of Very Poor and 58% of Severe are caught). Four possible causes, each testable:
 
 | Possible cause | Type | Test |
 |---|---|---|
@@ -848,7 +848,7 @@ pd.DataFrame({f'today {lo}-{hi}': df[df['aqi_today'].between(lo, hi)][T.TARGET].
 
 ### 9.2 Do near-identical days end differently?
 
-For every high-category day, find the most similar day of the **same city** in all 26 numeric inputs (standardised), and check whether the two ended in the same category. If look-alike days often end differently, no model can separate them from these inputs.
+For every high-category day, find the most similar day of the **same city** across all 26 numeric inputs (standardised) and check whether both ended in the same category. If look-alike days often end differently, no model can separate them with these inputs.
 
 
 ```python
@@ -1080,7 +1080,7 @@ pd.DataFrame(rows).T.round(2)
 
 ### 9.5 Noisy labels: errors by the number of stations measuring tomorrow's AQI
 
-A city's AQI in the bulletin is averaged over its monitoring stations; with few stations it is a noisier measurement. The final model's errors on the 2025 high-category days, by station count. Caveat: station count is tied to the city (Delhi has the most), so part of the gap is a city effect.
+A city's bulletin AQI is averaged over its monitoring stations; fewer stations means a noisier measurement. Below: the final model's errors on the 2025 high-category days, by station count. Caveat: station count is tied to the city (Delhi has the most), so part of the gap is a city effect.
 
 
 ```python
@@ -1151,9 +1151,9 @@ high_2025.groupby(stations, observed=True)['wrong'].agg(days='size', error_rate=
 **Conclusion: a data issue, of information, not of the model or of quantity.**
 
 - **Tomorrow moves too much** on polluted days (about 34 points a day, 50+ on a third of days) for today's inputs to pin down its 100-point band; from AQI 401-450 today, tomorrow is Severe or Very Poor about equally often.
-- **Near-identical days end differently**: the look-alike of a Severe day was Severe only about half the time and Very Poor almost as often. The inputs cannot separate these days, whatever the model.
-- **More data** leaves Poor and Very Poor flat; Severe gains until about 75% of the data, then stops.
-- **A much bigger model** memorises the training days (100%) but is no better on new days: there is no extra signal to learn.
+- **Near-identical days end differently**: the look-alike of a Severe day was Severe only about half the time and Very Poor almost as often. No model can separate these days with these inputs.
+- **More data** leaves Poor and Very Poor flat; Severe improves until about 75% of the data, then stops.
+- **A much bigger model** fits the training days perfectly (100%) but is no better on new days: there is no extra signal to learn.
 - **Measurement noise** adds to it: errors are higher where few stations measure the AQI.
 
 What would help is **new information** about what drives a jump: tomorrow's weather forecast (wind, cold-night inversions), crop-fire activity or upwind AQI, festival dates.

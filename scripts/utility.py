@@ -1,4 +1,4 @@
-"""Helper functions shared by the notebooks."""
+"""Data preparation, evaluation and model helpers shared by the scripts, the web service and the notebooks."""
 import numpy as np
 import pandas as pd
 from sklearn.metrics import (accuracy_score, f1_score, precision_score,
@@ -147,107 +147,6 @@ def class_signal_summary(df, features, target="tomorrow_status", classes=AQI_CAT
 
     out = pd.DataFrame(rows).set_index("feature")
     return out.reindex(out["rho"].abs().sort_values(ascending=False).index)
-
-
-def skew_level(skew):
-    """Name a skewness value: |skew| < 0.5 symmetric, < 1 moderate, otherwise heavy."""
-    a = abs(skew)
-    return "symmetric" if a < 0.5 else "moderate" if a < 1 else "heavy"
-
-
-def outlier_fences(s, k=1.5, skew_threshold=1.0, spike_share=0.5):
-    """Lower and upper outlier fences for one numeric Series, chosen by its shape.
-
-    The 1.5 * IQR rule (Tukey) assumes a roughly symmetric distribution. On a
-    skewed one it flags ordinary values in the long tail and misses real
-    outliers on the short side. So:
-
-    - |skew| <= skew_threshold: Tukey fences, Q1 - k*IQR .. Q3 + k*IQR.
-    - |skew| >  skew_threshold: adjusted boxplot (Hubert & Vandervieren, 2008).
-      The fences move with the medcouple (MC), a robust skewness measure:
-        MC >= 0: Q1 - k*e^(-4MC)*IQR .. Q3 + k*e^(3MC)*IQR
-        MC <  0: Q1 - k*e^(-3MC)*IQR .. Q3 + k*e^(4MC)*IQR
-      The long side gets a wider fence and the short side a tighter one. MC
-      is clipped to [-0.6, 0.6], the range the rule was calibrated on. With
-      MC = 0 the fences are exactly Tukey's, so a symmetric body whose skew
-      comes only from a few extremes is still judged like Tukey would.
-
-    A value that covers at least `spike_share` of the data (e.g. 0 mm of rain
-    on most days) is a spike, not an outlier: fences are computed on the other
-    values and the spike itself is never flagged.
-
-    Returns a dict: method, skew, skew_level, mc (adjusted boxplot only), spike,
-    lower, upper.
-    """
-    x = pd.Series(s).dropna()
-    spike = None
-    shares = x.value_counts(normalize=True)
-    if len(shares) and shares.iloc[0] >= spike_share:
-        spike = shares.index[0]
-        x = x[x != spike]
-
-    out = {"method": "too few values", "skew": np.nan, "skew_level": "-", "mc": np.nan,
-           "spike": spike, "lower": np.nan, "upper": np.nan}
-    if len(x) < 4:
-        return out
-
-    q1, q3 = x.quantile([0.25, 0.75])
-    iqr = q3 - q1
-    skew = x.skew()
-
-    if abs(skew) <= skew_threshold:
-        method, mc, lo_mult, hi_mult = "tukey", np.nan, 1.0, 1.0
-    else:
-        from statsmodels.stats.stattools import medcouple            # imported here so the service works without statsmodels
-        method = "adjusted boxplot"
-        mc = float(np.clip(medcouple(x.to_numpy(dtype=float)), -0.6, 0.6))
-        a, b = (-4, 3) if mc >= 0 else (-3, 4)
-        lo_mult, hi_mult = np.exp(a * mc), np.exp(b * mc)
-
-    out.update(method=method, skew=round(skew, 2), skew_level=skew_level(skew), mc=round(mc, 3),
-               lower=q1 - k * lo_mult * iqr, upper=q3 + k * hi_mult * iqr)
-    return out
-
-
-def detect_outliers(df, features, by=None, k=1.5, skew_threshold=1.0, spike_share=0.5):
-    """Flag outliers in each feature with fences that respect its skew (see
-    `outlier_fences`).
-
-    by : optional column (e.g. 'city'). Fences are then computed within each
-         group, so a value is judged against its own group's normal. Use it
-         when groups sit at different levels (pressure by city altitude):
-         pooled, they look like a skewed or multi-peaked distribution.
-
-    Returns (summary, mask):
-      summary : one row per feature (per feature and group with `by`) with the
-                method, skew, medcouple, fences, low/high counts, % flagged,
-                and `n_tukey`, what the plain 1.5 * IQR rule on all values
-                would have flagged, for comparison.
-      mask    : boolean DataFrame like df[features], True = outlier.
-    """
-    groups = df.groupby(by, observed=True) if by else [(None, df)]
-    mask = pd.DataFrame(False, index=df.index, columns=features)
-    rows = []
-
-    for g, part in groups:
-        for f in features:
-            v = part[f]
-            fz = outlier_fences(v, k, skew_threshold, spike_share)
-            low, high = v < fz["lower"], v > fz["upper"]
-            mask.loc[part.index, f] = low | high
-
-            q1, q3 = v.quantile([0.25, 0.75])
-            tukey = ((v < q1 - 1.5 * (q3 - q1)) | (v > q3 + 1.5 * (q3 - q1))).sum()
-            rows.append({"feature": f, **({by: g} if by else {}), **fz,
-                         "lower": round(fz["lower"], 2), "upper": round(fz["upper"], 2),
-                         "n_low": int(low.sum()), "n_high": int(high.sum()),
-                         "pct": round((low | high).mean() * 100, 2), "n_tukey": int(tukey),
-                         "min": v.min(), "max": v.max()})
-
-    summary = pd.DataFrame(rows).set_index(["feature", by] if by else "feature")
-    if not by:
-        summary = summary.sort_values("pct", ascending=False)
-    return summary, mask
 
 
 def add_trend_features(df, col="aqi_today", window=7, min_periods=4, date_col="date"):

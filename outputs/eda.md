@@ -2,9 +2,9 @@
 
 # Next-Day AQI Forecasting: Exploratory Data Analysis
 
-**Goal:** predict tomorrow's AQI category (`tomorrow_status`, six classes from *Good* to *Severe*) for 14 Indian cities, using what is known today: AQI, prominent pollutants, weather and calendar.
+**Goal:** predict tomorrow's AQI category (`tomorrow_status`, six classes from *Good* to *Severe*) for 14 Indian cities from today's AQI, prominent pollutants, weather and calendar.
 
-**Data:** `data/processed/aqi_weather_2015_2025.csv`, built by the scripts in `code/`. It joins CPCB daily AQI bulletins (Urban Emissions compilation) with Open-Meteo daily weather, May 2015 to December 2025, one row per city per day.
+**Data:** `data/processed/aqi_weather_2015_2025.csv`, built by the scripts in `code/`: CPCB daily AQI bulletins (Urban Emissions compilation) joined with Open-Meteo daily weather, May 2015 to December 2025, one row per city per day.
 
 **Contents**
 1. Setup and loading
@@ -16,9 +16,10 @@
 7. Numeric feature distributions
 8. Features vs target
 9. Collinearity
-10. Summary of decisions
+10. Lag and rolling features
+11. Summary of decisions
 
-Each analysis ends with a **Finding → Decision** note. Reusable helpers (target, imputation, split, box-plot statistics) live in `utility.py`.
+Each analysis ends with a **Finding → Decision** note. Shared helpers (target, imputation, split, box-plot statistics) are in `utility.py`.
 
 ## 1. Setup and loading
 
@@ -826,8 +827,8 @@ city_mix.round(0).sort_values('Good')
 </table>
 </div>
 
-**Finding:** cities behave very differently. Delhi NCR cities spend about 45–50% of days at *Poor* or worse, while Bengaluru, Chennai and Hyderabad almost never do. Cities with similar climates also differ: Patna (about 40% *Poor* or worse) is much worse than Kolkata (about 17%). Weather alone does not explain this; `city` stands in for emissions and geography, which the dataset does not measure.
-**Decision:** keep `city` and one-hot encode it (14 columns). Once lag features exist, compare validation scores with and without `city`, since recent AQI history may already capture the city baseline.
+**Finding:** city baselines differ sharply. Delhi NCR cities spend about 45–50% of days at *Poor* or worse; Bengaluru, Chennai and Hyderabad almost never do. Cities with similar climates also differ: Patna (about 40% *Poor* or worse) vs Kolkata (about 17%). Weather alone does not explain this; `city` proxies for emissions and geography, which the dataset does not measure.
+**Decision:** keep `city`, one-hot encoded (14 columns). Once lag features exist, compare validation scores with and without `city`, since recent AQI history may already capture the city baseline.
 
 ### 3.2 Prominent pollutants
 
@@ -887,16 +888,16 @@ dtype: int64
 
 ## 4. Target: `tomorrow_status`
 
-The model predicts **tomorrow's** category from **today's** data, so each row needs tomorrow's category as its label. `groupby('city')['aqi_today'].shift(-1)` moves each city's AQI up by one row, so every day receives the next day's AQI. `aqi_to_category` then converts it into the CPCB category.
+Each row is labelled with the next day's category: `groupby('city')['aqi_today'].shift(-1)` assigns each day the city's next-day AQI, and `aqi_to_category` maps it to the CPCB category.
 
 | Rule | Why |
 |---|---|
 | Shift **within each city** | Bengaluru's last day must not receive Chennai's first day as "tomorrow" |
 | Build from the AQI **value** | Avoids the 56 wrong labels found in section 2.1 |
-| Build it **before** filling gaps | A filled (copied) AQI must never become an answer the model learns from |
-| Features look back (`shift(+n)`), the target looks forward (`shift(-1)`) | Any feature that looks forward leaks the answer |
+| Build it **before** filling gaps | A filled (copied) AQI must never become a training label |
+| Features look back (`shift(+n)`), the target looks forward (`shift(-1)`) | Any forward-looking feature leaks the target |
 
-The last day of each city has no tomorrow, so its target is empty and the row is dropped in section 5.
+The last day of each city has no target; those rows are dropped in section 5.
 
 ```python
 df['tomorrow_status'] = aqi_to_category(df.groupby('city')['aqi_today'].shift(-1))
@@ -982,11 +983,11 @@ df.loc[(df['city'] == 'Delhi') & df['date'].between('2023-10-31', '2023-11-04'),
 </table>
 </div>
 
-On 2 November, today is *Very Poor* (392) but tomorrow is *Severe* (468). A "tomorrow equals today" guess misses exactly this kind of jump, which is where the model can add value.
+On 2 November, today is *Very Poor* (392) and tomorrow *Severe* (468). Persistence ("tomorrow = today") misses this kind of jump; this is where a model can add value.
 
 ## 5. Missing values
 
-About 4.2% of days have no bulletin. The options were compared by hiding 3,000 known AQI values and filling them back:
+About 4.2% of days have no bulletin. Imputation methods were compared by masking 3,000 known AQI values and reconstructing them:
 
 | Method | Mean error (AQI points) | Category correct |
 |---|---|---|
@@ -997,7 +998,7 @@ About 4.2% of days have no bulletin. The options were compared by hiding 3,000 k
 | **Forward fill (last known value, same city)** | **29** | **68%** |
 | Linear interpolation | 22 | 74%, but it uses tomorrow's value: **leakage** |
 
-Forward fill is the most accurate method that uses only the past. First, check how long the gaps are:
+Forward fill is the most accurate past-only method. Gap lengths:
 
 ```python
 missing = df['aqi_today'].isna()
@@ -1101,10 +1102,10 @@ plt.show()
 
 ![chart](eda_files/eda_31_1.png)
 
-**Finding:** the classes are imbalanced. Satisfactory (32.8%) has about 13.6 times as many days as Severe (2.4%), and Satisfactory plus Moderate make up about two thirds of the data. A model could ignore Severe entirely and still reach a high accuracy.
+**Finding:** the classes are imbalanced. Satisfactory (32.8%) has about 13.6 times as many days as Severe (2.4%); Satisfactory plus Moderate make up about two thirds of the data, so a model that never predicts Severe still reaches high accuracy.
 **Decision:**
-- Evaluate with **macro F1**, which gives every class equal weight, plus **recall on Very Poor and Severe**, the days that matter most.
-- Train with `class_weight='balanced'` (weight = rows / (6 × rows in class)), which makes each Severe day count about 7 times more and each Satisfactory day about half.
+- Evaluate with **macro F1** (equal weight per class) plus **recall on Very Poor and Severe**, the days that matter most.
+- Train with `class_weight='balanced'` (weight = rows / (6 × rows in class)): each Severe day counts about 7 times more, each Satisfactory day about half.
 
 ```python
 share = (pd.crosstab(df['date'].dt.month, df[target], normalize='index')
@@ -1144,7 +1145,7 @@ plt.show()
 
 ## 7. Numeric feature distributions
 
-A histogram shows one feature on its own: its shape, skew, unusual peaks and impossible values. Skew above about ±1 means a long tail, which can distort logistic regression.
+Histograms check shape, skew, multiple peaks and implausible values. Skew beyond about ±1 indicates a long tail, which can distort logistic regression.
 
 ```python
 numerical = [c for c in df.select_dtypes(include='number').columns
@@ -1341,8 +1342,8 @@ Name: pressure_mean, dtype: float64
 ```
 
 **Findings:**
-- `precip_sum` is very skewed (skew ≈ 7.6): about 0 on most days, up to 251 mm. Its 17% "outliers" are simply rainy days.
-- `pressure_mean` has three peaks. This is **altitude**, not weather: the city medians are 912 hPa in Bengaluru and 953 hPa in Hyderabad, which sit higher, against 982–1009 hPa everywhere else. On its own, the feature mostly identifies the city.
+- `precip_sum` is highly skewed (skew ≈ 7.6): about 0 on most days, up to 251 mm. Its 17% "outliers" are rainy days.
+- `pressure_mean` has three peaks caused by **altitude**, not weather: city medians are 912 hPa in Bengaluru and 953 hPa in Hyderabad against 982–1009 hPa elsewhere. On its own, the feature mostly identifies the city.
 - All values are physically plausible (humidity 10–98%, temperature 1–47 °C, AQI 14–500). The extremes are real events, including the Severe days the model most needs to learn.
 
 **Decisions:**
@@ -1352,12 +1353,12 @@ Name: pressure_mean, dtype: float64
 
 ## 8. Features vs target
 
-A box plot per class shows how today's value of a feature relates to **tomorrow's** category. The box holds the middle 50% of days and the line is the median. Four questions read the signal:
+Box plots of today's feature values by **tomorrow's** category, read for:
 
-1. **Do the medians move in a clear direction?** Yes means the feature carries signal.
-2. **Do the boxes overlap?** Heavy overlap means the feature alone cannot separate those classes.
-3. **Is the pattern straight or does it bend?** Logistic regression can only follow straight-line patterns; trees can follow bends.
-4. **Which classes look the same?** Those classes need other features to tell them apart.
+1. **Median trend:** a clear direction indicates signal.
+2. **Box overlap:** heavy overlap means the feature alone cannot separate those classes.
+3. **Shape:** linear or bending. Logistic regression can use only linear patterns; trees can use bends.
+4. **Indistinguishable classes:** these need other features.
 
 ```python
 features = ['aqi_today', 'temp_min', 'temp_range', 'dew_point_mean', 'humidity_mean',
@@ -1386,22 +1387,20 @@ plt.show()
 
 ![chart](eda_files/eda_41_4.png)
 
-`class_signal_summary` (in `utility.py`) turns the box plots into numbers, one row per feature. How to read each column:
+`class_signal_summary` (in `utility.py`) summarises the box plots, one row per feature:
 
-| Column | Plain question | How to read it | Example |
-|---|---|---|---|
-| `rho` | Does the feature go up or down as tomorrow gets worse? | A score from −1 to +1. **Near 0** = no link. **Plus** = the value rises as air gets worse, **minus** = it falls. The further from 0, the stronger the link. | `aqi_today` 0.88 (strong); `temp_min` −0.51 (colder nights before worse air); `pressure_mean` 0.16 (weak) |
-| `direction` | The same answer in words | `up` / `down` (strong, \|rho\| ≥ 0.3), `weak up` / `weak down` (0.1–0.3), `none` (below 0.1) | |
-| `medians` | What is the typical value in each class? | The middle line of each box, from Good to Severe | `temp_min`: 25 → 25 → 22 → 17.5 → 12 → 12 |
-| `avg_box_overlap` | Do neighbouring boxes sit on top of each other? | **0** = boxes apart, the feature tells the classes apart easily. **1** = one box fully inside the other, it cannot. Averaged over the five neighbouring pairs (Good–Satisfactory, Satisfactory–Moderate, …). | `aqi_today` 0.00; `temp_min` 0.80 |
-| `good_vs_severe_overlap` | Can it at least tell the best days from the worst? | Same 0-to-1 scale, but only Good against Severe | `pressure_mean` 1.0: Good and Severe days have the same pressure |
-| `linear_r2` | How close are the six medians to a straight line? | **1** = perfectly straight; lower = more curved | `aqi_today` 0.98 |
-| `shape` | What does the line of medians look like? | **straight**: a steady rise or fall, any model can use it. **bends**: it moves, then flattens. **reverses**: it goes down and then up (a U-shape), which logistic regression cannot use. | `aqi_today` straight; `temp_min` bends; `humidity_mean` reverses (84 → 63 → 70) |
-| `same_as` | Which neighbouring classes look the same? | Two classes are listed when their medians are almost equal **and** their boxes mostly overlap: this feature cannot tell them apart. | `temp_min`: Very Poor≈Severe (both 12 °C) |
+| Column | Meaning | Example |
+|---|---|---|
+| `rho` | Spearman correlation with tomorrow's class, −1 to +1. Positive = rises as air quality worsens; near 0 = no link | `aqi_today` 0.88 (strong); `temp_min` −0.51 (colder nights before worse air); `pressure_mean` 0.16 (weak) |
+| `direction` | `up` / `down` (strong, \|rho\| ≥ 0.3), `weak up` / `weak down` (0.1–0.3), `none` (below 0.1) | |
+| `medians` | Median per class, Good to Severe | `temp_min`: 25 → 25 → 22 → 17.5 → 12 → 12 |
+| `avg_box_overlap` | Overlap of neighbouring boxes, averaged over the five adjacent pairs (Good–Satisfactory, Satisfactory–Moderate, …). 0 = separated, 1 = one box fully inside the other | `aqi_today` 0.00; `temp_min` 0.80 |
+| `good_vs_severe_overlap` | Same 0-to-1 scale, Good vs Severe only | `pressure_mean` 1.0: Good and Severe days have the same pressure |
+| `linear_r2` | Fit of the six medians to a straight line; 1 = perfectly straight | `aqi_today` 0.98 |
+| `shape` | `straight` (steady rise or fall, usable by any model), `bends` (moves, then flattens), `reverses` (U-shape, unusable by logistic regression) | `aqi_today` straight; `temp_min` bends; `humidity_mean` reverses (84 → 63 → 70) |
+| `same_as` | Neighbouring classes with near-equal medians **and** mostly overlapping boxes, i.e. not separable by this feature | `temp_min`: Very Poor≈Severe (both 12 °C) |
 
-**Reading a row as a sentence.** `temp_min`: *colder nights come before worse air (`rho` −0.51, `down`), but the boxes overlap a lot (0.80), so temperature cannot decide on its own. The drop flattens at the bad end (`bends`), and it cannot tell Very Poor from Severe (`same_as`).*
-
-These are rules of thumb, not statistical tests. The cut-offs (for example 0.3 for a strong `rho`) can be changed in the function. `rho` is a Spearman correlation: it only uses the *order* of the values, which suits ordered classes like Good → Severe.
+The thresholds are heuristics, not statistical tests; the cut-offs (for example 0.3 for a strong `rho`) are configurable in the function. `rho` is rank-based, which suits ordered classes (Good → Severe).
 
 ```python
 class_signal_summary(df, features)
@@ -1634,16 +1633,16 @@ class_box_stats(df, ['aqi_today', 'temp_min'])
 </div>
 
 **Findings:**
-- `aqi_today` is by far the strongest signal (rho = 0.88). It is the only feature whose boxes do not overlap at all, with a straight, steady rise.
-- `temp_min`, `temp_range`, `dew_point_mean`, `cloud_cover_mean` and `precip_sum` are strong (|rho| about 0.5–0.6). Cold, dry, clear and calm days come before bad air, as the inversion physics predicts.
-- The weather features **bend**: they change a lot between Good and Poor, then flatten. **Very Poor and Severe look the same in almost every weather feature.** Weather signals that a bad day is coming, but not how bad; only `aqi_today` separates them clearly.
+- `aqi_today` is by far the strongest signal (rho = 0.88): the only feature with no box overlap, and a straight, steady rise.
+- `temp_min`, `temp_range`, `dew_point_mean`, `cloud_cover_mean` and `precip_sum` are strong (|rho| about 0.5–0.6). Cold, dry, clear and calm days precede bad air, consistent with inversion physics.
+- The weather features **bend**: large changes between Good and Poor, then flat. **Very Poor and Severe are indistinguishable in almost every weather feature.** Weather indicates that a bad day is coming, not how bad; only `aqi_today` separates them clearly.
 - `humidity_mean` **reverses** (U-shape, lowest at Moderate and Poor), which logistic regression cannot use.
 - `pressure_mean` shows almost no signal (rho = 0.16; the Severe box lies entirely inside the Good box), consistent with the altitude effect in section 7.
 
 **Decisions:**
 - Keep `aqi_today` and the strong weather features.
-- Add lag and rolling features (section 10) so the model can see the recent trend, not only today.
-- The bends and the U-shape suggest that tree models (random forest, XGBoost) will beat logistic regression; logistic regression remains the interpretable baseline.
+- Add lag and rolling features (section 10) to expose the recent trend.
+- The bends and the U-shape favour tree models (random forest, XGBoost) over logistic regression; logistic regression remains the interpretable baseline.
 
 ```python
 flag_share = (df.groupby(target, observed=True)[flag_cols].mean() * 100).reindex(AQI_CATEGORIES)
@@ -1758,12 +1757,12 @@ flag_share.round(1)
 </table>
 </div>
 
-**Finding:** PM2.5 drives the bad days: it is prominent on about 92% of the days before a Severe day, against 38% before a Good day. CO, O<sub>3</sub> and NO<sub>2</sub> mostly appear before clean days: when particles are low, a gas becomes the "worst" pollutant even though the air is clean overall. PM10 is common on cleaner days (dust) and falls as AQI rises.
-**Decision:** keep the six flags; they add information about *which* pollutant drives the AQI, which the AQI value alone does not show.
+**Finding:** PM2.5 drives the bad days: it is prominent on about 92% of the days before a Severe day, against 38% before a Good day. CO, O<sub>3</sub> and NO<sub>2</sub> mostly appear before clean days: with particulates low, a gas becomes the prominent pollutant although overall air is clean. PM10 is common on cleaner days (dust) and falls as AQI rises.
+**Decision:** keep the six flags; they show *which* pollutant drives the AQI, which the AQI value alone does not.
 
-### 8.1 Mutual information: how much does each categorical feature tell us?
+### 8.1 Mutual information for categorical features
 
-Correlation needs numbers. For categories (today's category, city, month, the pollutant flags), **mutual information** asks: *once I know this feature, how much less unsure am I about tomorrow's category?* **0** means it tells nothing; higher means more. There is no fixed top of the scale, so `vs_status_today` shows each score as a share of the strongest one.
+Correlation requires numeric features. For categorical ones (today's category, city, month, the pollutant flags), **mutual information** with tomorrow's category is used: 0 means no information, higher means more. The scale has no fixed maximum, so `vs_status_today` expresses each score as a share of the strongest.
 
 Computed on the training years only (2015–2022), so the validation and test years stay unseen.
 
@@ -1841,12 +1840,12 @@ mi
 </table>
 </div>
 
-**Finding:** today's category tells by far the most about tomorrow (0.686), which is why "tomorrow = today" is a strong benchmark. Month (0.227) and city (0.180) come next, each carrying about a quarter to a third as much: this confirms the seasonality (section 6) and the city differences (section 3.1). Among the pollutant flags, CO (0.105) scores highest and SO<sub>2</sub> (0.009) almost nothing. CO marks clean days, which are many; PM2.5 marks Severe days, which are few, so its score is lower than its 92% share before Severe days suggests (mutual information is dominated by the common categories).
+**Finding:** today's category is by far the most informative (0.686), which is why "tomorrow = today" is a strong benchmark. Month (0.227) and city (0.180) follow at about a quarter to a third of that, confirming the seasonality (section 6) and the city differences (section 3.1). Among the pollutant flags, CO (0.105) scores highest and SO<sub>2</sub> (0.009) almost nothing. CO marks clean days, which are common; PM2.5 marks Severe days, which are rare, so its score is lower than its 92% share before Severe days suggests (mutual information is dominated by the common categories).
 **Decision:** keep `city`, `month` and all six flags. The weak flags cost little, and tree models can ignore what does not help.
 
 ## 9. Collinearity
 
-Collinear features carry the same information. This makes logistic regression coefficients unstable and hard to interpret; tree models are not affected. Two checks are used: the correlation matrix for pairs, and the VIF for each feature against **all** the others.
+Collinearity makes logistic regression coefficients unstable and hard to interpret; tree models are unaffected. Two checks: the correlation matrix (pairs) and VIF (each feature against **all** others).
 
 ```python
 corr = df.corr(numeric_only=True)
@@ -1963,7 +1962,7 @@ upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
 </table>
 </div>
 
-A correlation matrix only compares two features at a time. `temp_range` is exactly `temp_max − temp_min`, a three-way dependency that no single cell shows. The VIF (variance inflation factor) catches it. VIF is computed on the **training years only**: 1–5 is fine, 5–10 is moderate, above 10 is serious.
+Pairwise correlation misses multi-feature dependencies such as `temp_range` = `temp_max − temp_min`; the VIF (variance inflation factor) catches them. VIF is computed on the **training years only**: 1–5 is fine, 5–10 moderate, above 10 serious.
 
 ```python
 from statsmodels.stats.outliers_influence import variance_inflation_factor
@@ -2128,39 +2127,37 @@ vif_table(df_train[lr_numerical]).to_frame('VIF: reduced set for logistic regres
 </div>
 
 **Findings:**
-- **Temperature.** `temp_max`, `temp_min` and `temp_range` are perfectly collinear (VIF ≈ 10<sup>15</sup>), because `temp_range` is exactly `temp_max − temp_min`. `temp_mean` is a near-duplicate as well (r = 0.95 with both `temp_min` and `temp_max`; VIF ≈ 228).
-- **Moisture.** `dew_point_mean` (VIF ≈ 46) and `humidity_mean` (VIF ≈ 35) are also above 10, which is serious. Both fall as `temp_range` rises (r = −0.78 and −0.74): on humid days the gap between day and night temperature is small. `dew_point_mean` also follows `temp_min` (r = 0.76). `humidity_mean` does not (r ≈ 0); it falls as `temp_max` rises (r = −0.53).
-- **Wind.** `wind_speed_mean` and `wind_speed_max` correlate at 0.88, but their VIF is only moderate (≈ 5.5 each). `wind_dir_mean` correlates 0.71 with `wind_u_mean`; it is left out of the VIF lists because it is an angle (359° and 1° are neighbours, but far apart as numbers).
-- **Clouds.** `cloud_cover_mean` and `temp_range` correlate at −0.67 (cloudy days have smaller day–night swings), but the VIF of `cloud_cover_mean` is low (≈ 2.4), so no action is needed.
-- **Reduced set.** Every VIF is below 10. Only `temp_range` (≈ 7.4) and `humidity_mean` (≈ 5.2) are above 5. Removing `humidity_mean` as well brings `temp_range` down to ≈ 2.8.
+- **Temperature.** `temp_max`, `temp_min` and `temp_range` are perfectly collinear (VIF ≈ 10<sup>15</sup>), since `temp_range` is exactly `temp_max − temp_min`. `temp_mean` is a near-duplicate (r = 0.95 with both `temp_min` and `temp_max`; VIF ≈ 228).
+- **Moisture.** `dew_point_mean` (VIF ≈ 46) and `humidity_mean` (VIF ≈ 35) are also above 10. Both fall as `temp_range` rises (r = −0.78 and −0.74): humid days have a small day–night range. `dew_point_mean` also tracks `temp_min` (r = 0.76); `humidity_mean` does not (r ≈ 0) but falls as `temp_max` rises (r = −0.53).
+- **Wind.** `wind_speed_mean` and `wind_speed_max` correlate at 0.88, but their VIF is only moderate (≈ 5.5 each). `wind_dir_mean` correlates 0.71 with `wind_u_mean`; it is excluded from the VIF lists because it is an angle (359° and 1° are adjacent but numerically far apart).
+- **Clouds.** `cloud_cover_mean` and `temp_range` correlate at −0.67 (cloudy days have smaller day–night swings), but the VIF of `cloud_cover_mean` is low (≈ 2.4); no action needed.
+- **Reduced set.** Every VIF is below 10; only `temp_range` (≈ 7.4) and `humidity_mean` (≈ 5.2) exceed 5. Also removing `humidity_mean` brings `temp_range` down to ≈ 2.8.
 
 **Decisions:**
-- For **logistic regression**, drop `temp_mean`, `temp_max`, `wind_speed_max`, `dew_point_mean` and `wind_dir_mean` (`wind_u_mean` and `wind_v_mean` encode the same direction without the 359°→0° jump). Test dropping `humidity_mean` as well on validation: it removes the last moderate VIF, and logistic regression cannot use its U-shape anyway (section 8).
+- For **logistic regression**, drop `temp_mean`, `temp_max`, `wind_speed_max`, `dew_point_mean` and `wind_dir_mean` (`wind_u_mean` and `wind_v_mean` encode the same direction without the 359°→0° jump). Test dropping `humidity_mean` on validation: it removes the last moderate VIF, and logistic regression cannot use its U-shape (section 8).
 - For **tree models**, keep all features.
 - Repeat this check after adding the lag and rolling features: `aqi_roll7_mean` correlates 0.92 with `aqi_today` (section 10).
 
-## 10. Why lag and rolling features?
+## 10. Lag and rolling features
 
-**The problem.** The model looks at one row at a time. Each row is one city on one day, and the model does not read the rows in order. From `aqi_today` alone it cannot tell whether AQI has been climbing all week or jumped only today. A person forecasting tomorrow would look at the last few days, not only at today.
+Each row is one city-day and the model does not see row order, so `aqi_today` alone cannot distinguish a week-long climb from a one-day jump. A short summary of the recent past is added to each row:
 
-**The fix.** Copy a short summary of the recent past into today's row. Each feature answers one simple question:
-
-| Feature | Question it answers | Delhi, 2 Nov 2023 |
+| Feature | Meaning | Delhi, 2 Nov 2023 |
 |---|---|---|
-| `aqi_roll7_mean` | What has the usual level been this week? | 336 |
-| `aqi_roll7_std` | Has the week been calm or jumpy? | 43.5 |
-| `aqi_diff1` | Is AQI rising or falling since yesterday? | +28 |
-| `aqi_dev7` | How unusual is today compared with the previous 7 days? | +75 |
-| `month` | What time of year is it? (section 6) | 11 |
+| `aqi_roll7_mean` | Typical level over the past week | 336 |
+| `aqi_roll7_std` | Volatility over the past week | 43.5 |
+| `aqi_diff1` | Change since yesterday | +28 |
+| `aqi_dev7` | Today relative to the previous 7 days | +75 |
+| `month` | Season (section 6) | 11 |
 
-**Three rules keep the features honest** (`add_trend_features` in `utility.py`):
-1. **Only the past.** Every feature uses today and earlier days, never tomorrow, which is the answer.
+Leakage rules (`add_trend_features` in `utility.py`):
+1. **Past only.** Features use today and earlier days, never tomorrow.
 2. **Within each city.** Delhi's past never ends up in Bengaluru's row.
-3. **By calendar day.** "Yesterday" is always the previous date. If that day is missing, the feature is left empty (NaN) instead of quietly using an older day.
+3. **By calendar day.** "Yesterday" is always the previous date; if that day is missing, the feature is NaN rather than silently using an older day.
 
-### 10.1 Does AQI remember its past?
+### 10.1 Autocorrelation of AQI
 
-If today's AQI had nothing to do with last week's, the past would be useless to the model. **Autocorrelation** measures this: the correlation between a city's AQI today and its AQI *k* days earlier. How fast it fades also tells us how long the window should be.
+Autocorrelation between a city's AQI today and *k* days earlier shows whether the past is informative and how long the window should be.
 
 ```python
 # Autocorrelation: how similar is AQI to its value k days earlier? (per city, then averaged)
@@ -2240,9 +2237,9 @@ acf.mean(axis=1).round(2).to_frame('avg correlation').T
 </table>
 </div>
 
-**Finding:** AQI has a strong memory. Today is closely tied to yesterday (r ≈ 0.86 on average). The link drops quickly over the first five days (0.86 → 0.68) and then hardly moves (0.66 at 7 days, 0.62 at 14). That flat tail is the season: winter stays bad for weeks, and `month` already captures that. The cleanest cities, Chennai and Bengaluru, forget fastest.
+**Finding:** AQI is strongly autocorrelated (r ≈ 0.86 with yesterday on average). The correlation drops quickly over the first five days (0.86 → 0.68), then flattens (0.66 at 7 days, 0.62 at 14). The flat tail is seasonal (winter stays bad for weeks), which `month` already captures. The cleanest cities, Chennai and Bengaluru, decorrelate fastest.
 
-**Decision:** use a **7-day window**. It covers the part of the memory that changes from day to day; a longer window would mostly repeat the season.
+**Decision:** use a **7-day window**. It covers the short-term component; a longer window would mostly repeat the season.
 
 ### 10.2 Building the features
 
@@ -2358,11 +2355,11 @@ trend_cols = ['aqi_roll7_mean', 'aqi_roll7_std', 'aqi_diff1', 'aqi_dev7']
 </table>
 </div>
 
-Reading the Delhi week: AQI rose every day. `aqi_roll7_mean` follows behind today's value (336 against 392), because it averages the whole week. `aqi_diff1` shows the daily rises, and `aqi_dev7` says today is 75 points above the previous week. The next day was *Severe*. `aqi_today` alone (392) shows a high level but not that it got there by climbing for a week.
+Delhi week: AQI rose every day. `aqi_roll7_mean` lags today's value (336 against 392) because it averages the week; `aqi_diff1` shows the daily rises, and `aqi_dev7` puts today 75 points above the previous week. The next day was *Severe*. `aqi_today` alone (392) shows the level but not the week-long climb.
 
-### 10.3 Do the new features carry signal?
+### 10.3 Signal of the new features
 
-The same check as section 8: how each feature moves across tomorrow's classes, and how much it overlaps with `aqi_today`.
+Same check as section 8: behaviour across tomorrow's classes, and overlap with `aqi_today`.
 
 ```python
 class_signal_summary(trend.dropna(subset=trend_cols), ['aqi_today'] + trend_cols)
@@ -2522,13 +2519,13 @@ trend[['aqi_today'] + trend_cols].corr().round(2)
 </div>
 
 **Findings:**
-- `aqi_roll7_mean` is strong (rho = 0.85), but it correlates 0.92 with `aqi_today`. It is mostly the same information, smoothed.
-- `aqi_roll7_std` is the most useful new feature: a clear signal (rho = 0.61) that is only partly tied to `aqi_today` (r = 0.53), so it adds information. Jumpy weeks come before bad days.
-- `aqi_diff1` and `aqi_dev7` are weak on their own (rho = 0.14 and 0.22) and almost unrelated to the weekly level. They may still help when combined with weather, which tree models can find.
+- `aqi_roll7_mean` is strong (rho = 0.85) but correlates 0.92 with `aqi_today`: largely the same information, smoothed.
+- `aqi_roll7_std` is the most useful new feature: a clear signal (rho = 0.61), only partly tied to `aqi_today` (r = 0.53). Volatile weeks precede bad days.
+- `aqi_diff1` and `aqi_dev7` are weak alone (rho = 0.14 and 0.22) and nearly unrelated to the weekly level. They may help in combination with weather, which tree models can exploit.
 
-### 10.4 The hard case: Very Poor today, Severe tomorrow?
+### 10.4 Very Poor today, Severe tomorrow
 
-Section 8 showed that weather cannot separate Very Poor from Severe. Can the trend? Take the days that are Very Poor today and compare how often tomorrow turns Severe.
+Section 8 showed that weather cannot separate Very Poor from Severe. This checks the trend instead: among days that are Very Poor today, how often tomorrow is Severe.
 
 ```python
 vp = trend[trend['status_today'] == 'Very Poor'].dropna(subset=trend_cols)
@@ -2602,13 +2599,13 @@ pd.concat({
 </table>
 </div>
 
-**Finding:** the **level** matters most. A Very Poor day at 370–400 turns Severe 23.8% of the time, against 3.1% at 300–340. The **direction** does not help: about 10% whether AQI is rising or falling. The biggest jumps are even slightly *less* likely to turn Severe (7.9%), because AQI tends to fall back after a spike.
+**Finding:** the **level** matters most. A Very Poor day at 370–400 turns Severe 23.8% of the time, against 3.1% at 300–340. The **direction** does not help: about 10% whether AQI is rising or falling. The largest jumps are slightly *less* likely to turn Severe (7.9%), as AQI tends to fall back after a spike.
 
 **Decisions:**
-- Add the four features and `month`. They are cheap, use only the past, and give the model the recent history it cannot see otherwise.
+- Add the four features and `month`: cheap, past-only, and they expose recent history.
 - `aqi_roll7_std` is the most promising new feature. Keep `aqi_diff1` and `aqi_dev7` only if they improve the validation score.
 - For **logistic regression**, `aqi_roll7_mean` nearly duplicates `aqi_today` (r = 0.92): use one of them and rerun the VIF check. Tree models can take both.
-- Telling Very Poor from Severe stays the hardest part. The clearest clue is how high AQI already is, not where it is heading.
+- Very Poor vs Severe remains the hardest distinction; the clearest signal is the current AQI level, not its direction.
 
 ## 11. Summary of decisions
 

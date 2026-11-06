@@ -4,12 +4,12 @@
 
 **Goal:** predict tomorrow's AQI category (`tomorrow_status`, six classes from *Good* to *Severe*) for 14 Indian cities.
 
-This notebook builds on `eda.ipynb` (decisions D1–D12 in `docs/EDA_Decision_Document.pdf`). Part 1 builds the model features and checks them; part 2 trains the baselines.
+Builds on `eda.ipynb` (decisions D1–D12 in `docs/EDA_Decision_Document.pdf`). Part 1 builds and checks the model features; part 2 trains the baselines.
 
 **Part 1, feature engineering**
-1. Build the dataset with the EDA pipeline, in the order that avoids leakage
-2. Handle the rows whose trend features are empty
-3. Split by time
+1. Setup
+2. Build the dataset in leakage-safe order
+3. Handle rows with empty trend features; split by time
 4. Transforms for logistic regression
 5. Rerun the VIF check with the lag and rolling features
 6. Final feature sets
@@ -41,13 +41,13 @@ TREND = ['aqi_roll7_mean', 'aqi_roll7_std', 'aqi_diff1', 'aqi_dev7']
 
 ## 2. Build the dataset
 
-`prepare_dataset` (in `utility.py`) applies the EDA decisions in a fixed order. The order matters: two of the steps protect against leakage only in this sequence.
+`prepare_dataset` (in `utility.py`) applies the EDA decisions in a fixed order; steps 3 and 5 prevent leakage only in this sequence.
 
 | Step | What | Why this position |
 |---|---|---|
 | 1 | Rename to `aqi_today` / `status_today` | Makes the time direction explicit |
 | 2 | Pollutant flags `has_*` (NH<sub>3</sub> dropped) | D5 |
-| 3 | `tomorrow_status` from the next day's AQI **number**, per city | **Before filling**, so a filled value never becomes an answer (D1, D2) |
+| 3 | `tomorrow_status` from the next day's AQI **number**, per city | **Before filling**, so a filled value never becomes a label (D1, D2) |
 | 4 | `ffill_aqi(limit=3)`, adds `aqi_imputed` | Fills inputs only (D3) |
 | 5 | `add_trend_features`: lag / rolling features + `month` | **Before dropping rows**, so a dropped day still counts as "yesterday" (D11) |
 | 6 | Drop rows with no AQI today or no real tomorrow; drop the station count | D2, D3 |
@@ -350,7 +350,7 @@ df[['city', 'date', 'aqi_today'] + FLAGS + ['aqi_imputed', 'month'] + TREND + [T
 </table>
 </div>
 
-The first rows of each city have empty trend features: a 7-day window needs at least 4 known days, and the first day has no "yesterday". This is expected; section 3 handles it.
+The first rows of each city have empty trend features (a 7-day window needs at least 4 known days; the first day has no "yesterday"). Handled in section 3.
 
 ## 3. Rows with empty trend features
 
@@ -421,9 +421,9 @@ By year: {2015: 44, 2016: 66, 2017: 36, 2018: 35, 2019: 7, 2025: 7}
 </table>
 </div>
 
-**Finding:** 195 rows (0.4%) have an empty trend feature, 181 of them in 2015–2018 (the first days of each city and the days after long gaps). Their class mix is close to the overall one, with slightly more Severe days (4.6% against 2.4%), but that is only about 9 days out of 1,178 Severe days, too few to change the balance.
+**Finding:** 195 rows (0.4%) have an empty trend feature, 181 of them in 2015–2018 (each city's first days and the days after long gaps). Their class mix is close to the overall one, with slightly more Severe days (4.6% against 2.4%), but that is only about 9 of 1,178 Severe days, too few to change the balance.
 
-**Decision:** drop them from every split. Logistic regression cannot take empty values, and keeping **one** dataset for all models means every model is scored on exactly the same days. (Tree models could handle the gaps, but 0.4% of rows is not worth two different evaluation sets.)
+**Decision:** drop them from every split. Logistic regression cannot take empty values, and a single dataset means every model is scored on the same days. (Tree models could handle the gaps, but 0.4% of rows does not justify two evaluation sets.)
 
 ```python
 df = df[~empty].reset_index(drop=True)
@@ -467,17 +467,17 @@ pd.DataFrame({'rows': [len(df_train), len(df_val), len(df_test)],
 
 ## 4. Transforms for logistic regression
 
-Logistic regression gives each feature **one weight** and adds them up, so it can only use a feature whose effect is roughly "more of X → more (or less) likely". Tree models split on thresholds and need none of this. Three EDA decisions turn into new columns (`add_lr_features`):
+Logistic regression needs roughly monotonic, linear effects; tree models split on thresholds and need none of this. Three EDA decisions become new columns (`add_lr_features`):
 
-| New column | Problem it fixes | EDA decision |
+| New column | Problem fixed | EDA decision |
 |---|---|---|
-| `pressure_rel` = pressure − the city's normal pressure | Raw pressure mostly says **which city** (altitude): Bengaluru's normal is far below Delhi's | D8 |
-| `precip_log` = log(1 + rain) | Rain is extremely skewed: 0 mm on most days, up to 251 mm. A few huge values would dominate the weight | D8 |
-| `month_sin`, `month_cos` | Month as a number (1–12) says December is "12 times" January, and puts them far apart. On a circle they are neighbours | D7 |
+| `pressure_rel` = pressure − the city's normal pressure | Raw pressure mostly encodes the **city** (altitude): Bengaluru's normal is far below Delhi's | D8 |
+| `precip_log` = log(1 + rain) | Rain is extremely skewed: 0 mm on most days, up to 251 mm; a few extreme values would dominate the coefficient | D8 |
+| `month_sin`, `month_cos` | As an integer (1–12), December and January are far apart; cyclic encoding makes them adjacent | D7 |
 
 The city's normal pressure is computed on the **training years only**, so nothing from 2023–2025 leaks into the features.
 
-Why each transform works, with reusable rules for other problems: [`docs/feature_transformation_notes.md`](../docs/feature_transformation_notes.md).
+Rationale and reusable rules: [`docs/feature_transformation_notes.md`](../docs/feature_transformation_notes.md).
 
 ```python
 city_pressure = df_train.groupby('city')['pressure_mean'].mean()     # training years only
@@ -579,15 +579,15 @@ Raw month as a number, rho with the class order: 0.0
 ```
 
 **Findings:**
-- **`pressure_rel` reveals a real signal that raw pressure hid.** Raw pressure: rho 0.18. Pressure relative to the city's normal: **rho 0.52**, in a straight line. Once altitude is removed, the weather effect appears: *higher pressure than usual → calm, stagnant air → pollution builds up.*
-- **`month` as a plain number has no linear signal at all (rho 0.00)**: air is bad in December *and* January, the two ends of the scale. `month_cos` (high in winter, low in the monsoon) reaches **rho 0.48**. `month_sin` is weak alone but separates autumn (October–November, crop burning) from spring, which share the same `month_cos`.
-- **`precip_log`:** rho is unchanged (rank correlation ignores a log), but the skew drops from 7.8 to 1.6, so a few extreme rain days no longer dominate the weight.
+- **`pressure_rel` exposes a signal that raw pressure hid.** Raw pressure: rho 0.18. Relative to the city's normal: **rho 0.52**, linear. With altitude removed, the weather effect appears: higher-than-usual pressure → stagnant air → pollution builds up.
+- **`month` as an integer has no linear signal (rho 0.00)**: air is bad in December *and* January, the two ends of the scale. `month_cos` (high in winter, low in the monsoon) reaches **rho 0.48**. `month_sin` is weak alone but separates autumn (October–November, crop burning) from spring, which share the same `month_cos`.
+- **`precip_log`:** rho is unchanged (rank correlation is unaffected by a log), but skew drops from 7.8 to 1.6, so extreme rain days no longer dominate the coefficient.
 
 **Decision:** logistic regression uses `pressure_rel`, `precip_log`, `month_sin` and `month_cos` instead of `pressure_mean`, `precip_sum` and `month`. Tree models keep the raw columns.
 
 ## 5. VIF with the lag and rolling features
 
-The EDA's reduced set (D10) had every VIF below 10. Now the trend features are added. VIF asks, for each feature, *"how well can the other features predict this one?"*: about 1 is unique, 5–10 moderate, above 10 mostly a copy. Training years only.
+The EDA's reduced set (D10) had every VIF below 10; the trend features are now added. Thresholds: about 1 = unique, 5–10 = moderate, above 10 = largely redundant. Training years only.
 
 ### 5.1 All four trend features together
 
@@ -670,12 +670,12 @@ vif_table(df_train[['aqi_today'] + TREND + reduced_weather]).to_frame('VIF: aqi_
 </table>
 </div>
 
-**Finding:** three features explode: `aqi_today` (≈ 341), `aqi_roll7_mean` (≈ 286) and `aqi_dev7` (≈ 54). They are built from the same few days:
+**Finding:** three features explode: `aqi_today` (≈ 341), `aqi_roll7_mean` (≈ 286) and `aqi_dev7` (≈ 54). They are built from the same days:
 
 - `aqi_roll7_mean` = the average of **today and the 6 days before**
 - `aqi_dev7` = **today** minus the average of **the 7 days before**
 
-So any two of them almost exactly give the third. It is the same trap as `temp_max`, `temp_min` and `temp_range`. One of the three has to go.
+Any two almost exactly determine the third, as with `temp_max`, `temp_min` and `temp_range`. One of the three has to go.
 
 ### 5.2 Which one to drop?
 
@@ -1181,10 +1181,10 @@ No missing or infinite values in the 31 model columns of any split.
 | Very Poor | 11.0% | 7.2% | 5.2% |
 | Severe | 3.1% (1,048 days) | **1.0% (51 days)** | **0.7% (70 days)** |
 
-**What this means for modelling:**
+**Implications for modelling:**
 - **Severe recall on validation is noisy.** With 51 Severe days, each missed day moves recall by about 2 percentage points. Compare models on Severe recall only when the gap is clearly larger than that, and read it together with macro F1.
-- **The model will see more bad days in training than it meets later.** Trained on a 3.1% Severe rate, and with `class_weight='balanced'` pushing it further, it may predict Very Poor and Severe too often in 2023–2025. Check the **precision** of those classes (how many predicted Severe days really were Severe), not only recall.
-- This is a shift over time (drift), worth a dedicated check before the final model: is air quality improving, or did some cities' worst periods drop out of the data?
+- **Training contains more bad days than later years.** Trained on a 3.1% Severe rate, with `class_weight='balanced'` pushing further, the model may over-predict Very Poor and Severe in 2023–2025. Check **precision** for those classes, not only recall.
+- This is drift over time and needs a dedicated check before the final model: whether air quality is improving, or some cities' worst periods dropped out of the data.
 
 ## Summary of part 1
 
